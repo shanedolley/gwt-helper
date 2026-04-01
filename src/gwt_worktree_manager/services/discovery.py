@@ -1,0 +1,81 @@
+from dataclasses import dataclass
+from pathlib import Path
+
+from gwt_worktree_manager.config.manager import Config
+
+
+@dataclass
+class DiscoveredRepo:
+    """A discovered Git repository."""
+
+    name: str
+    path: Path
+
+
+class RepoDiscovery:
+    """Discovers Git repositories by scanning configured paths."""
+
+    def __init__(self, config: Config) -> None:
+        self._scan_paths = config.resolve_scan_paths()
+        self._scan_depth = config.scan_depth
+        self._worktrees_dir = config.resolve_worktrees_dir()
+
+    async def discover_repos(self) -> list[DiscoveredRepo]:
+        """Scan all configured paths for Git repositories.
+
+        Returns repos sorted by name. Excludes:
+        - Directories under worktrees_dir
+        - Directories that are themselves worktrees (.git is a file, not a dir)
+        - Symlinks (to prevent loops)
+        """
+        repos: list[DiscoveredRepo] = []
+        for scan_path in self._scan_paths:
+            if scan_path.exists() and scan_path.is_dir():
+                self._scan_directory(scan_path, 0, repos)
+
+        repos.sort(key=lambda r: r.name.lower())
+        return repos
+
+    def _scan_directory(
+        self,
+        directory: Path,
+        depth: int,
+        repos: list[DiscoveredRepo],
+    ) -> None:
+        """Recursively scan a directory for Git repos."""
+        if depth > self._scan_depth:
+            return
+
+        try:
+            entries = sorted(directory.iterdir())
+        except PermissionError:
+            return
+        except OSError:
+            return
+
+        for entry in entries:
+            if not entry.is_dir() or entry.is_symlink():
+                continue
+
+            if entry.name.startswith(".") and entry.name != ".git":
+                continue
+
+            try:
+                resolved = entry.resolve()
+                worktrees_resolved = self._worktrees_dir.resolve()
+                if str(resolved).startswith(str(worktrees_resolved)):
+                    continue
+            except OSError:
+                continue
+
+            git_dir = entry / ".git"
+            if git_dir.exists():
+                if git_dir.is_dir():
+                    repos.append(DiscoveredRepo(
+                        name=entry.name,
+                        path=entry.resolve(),
+                    ))
+                continue
+
+            if depth < self._scan_depth:
+                self._scan_directory(entry, depth + 1, repos)
