@@ -84,7 +84,8 @@ class GWTApp(App):
         Binding("r", "refresh", "Refresh"),
         Binding("y", "yank", "Copy Path"),
         Binding("tab", "focus_next_panel", "Next Panel"),
-        Binding("slash", "search", "Search"),
+        Binding("m", "move_worktree", "Move"),
+        Binding("s", "switch_worktree", "Switch"),
     ]
 
     def __init__(self) -> None:
@@ -121,7 +122,7 @@ class GWTApp(App):
         for repo in self._repos:
             try:
                 worktrees = await git.list_worktrees(repo.path)
-                self._metadata.reconcile(worktrees)
+                self._metadata.reconcile(worktrees, repo_name=repo.name)
             except Exception:
                 pass
 
@@ -244,13 +245,18 @@ class GWTApp(App):
         """Cycle focus to the next focusable panel."""
         self.action_focus_next()
 
-    async def action_search(self) -> None:
-        """Search placeholder — currently a no-op."""
+    async def action_move_worktree(self) -> None:
+        """Placeholder for move — not yet available in TUI."""
+        self.notify("Move not yet available in TUI. Use CLI: gwt move", timeout=3)
+
+    async def action_switch_worktree(self) -> None:
+        """Placeholder for switch — not yet available in TUI."""
+        self.notify("Switch not yet available in TUI. Use CLI: gwt switch", timeout=3)
 
     async def action_help(self) -> None:
         """Show keyboard shortcut help."""
         self.notify(
-            "Keys: c=Create d=Delete o=Open r=Refresh y=Copy /=Search q=Quit Tab=Next Panel",
+            "Keys: c=Create d=Delete o=Open r=Refresh y=Copy m=Move s=Switch q=Quit Tab=Next Panel",
             title="Keyboard Shortcuts",
             timeout=5,
         )

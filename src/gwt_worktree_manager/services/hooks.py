@@ -160,14 +160,14 @@ class HookRunner:
             except asyncio.TimeoutError:
                 # Kill the process group
                 try:
-                    os.killpg(proc.pid, signal.SIGTERM)
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                 except (ProcessLookupError, PermissionError):
                     pass
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5)
                 except asyncio.TimeoutError:
                     try:
-                        os.killpg(proc.pid, signal.SIGKILL)
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                     except (ProcessLookupError, PermissionError):
                         pass
 

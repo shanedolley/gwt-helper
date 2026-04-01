@@ -9,8 +9,8 @@ logger = logging.getLogger(__name__)
 GRAPHQL_ENDPOINT = "https://api.linear.app/graphql"
 
 ISSUE_QUERY = """
-query IssueByIdentifier($id: String!) {
-  issue(id: $id) {
+query IssueByIdentifier($identifier: String!) {
+  issueByIdentifier(identifier: $identifier) {
     title
     state {
       name
@@ -57,7 +57,7 @@ class LinearClient:
                 GRAPHQL_ENDPOINT,
                 json={
                     "query": ISSUE_QUERY,
-                    "variables": {"id": issue_id},
+                    "variables": {"identifier": issue_id},
                 },
             )
 
@@ -75,7 +75,7 @@ class LinearClient:
                 return None
 
             data = response.json()
-            issue_data = data.get("data", {}).get("issue")
+            issue_data = data.get("data", {}).get("issueByIdentifier")
             if issue_data is None:
                 return None
 

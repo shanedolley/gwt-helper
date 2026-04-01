@@ -117,4 +117,9 @@ def _parse_config(data: dict) -> Config:
             hook_env=repo_data.get("hook_env", []),
         )
 
+    if config.scan_depth < 1:
+        raise ConfigError("scan_depth must be >= 1")
+    if config.cache_ttl < 0:
+        raise ConfigError("cache_ttl must be >= 0")
+
     return config

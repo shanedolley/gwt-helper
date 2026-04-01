@@ -144,7 +144,7 @@ def delete(
     """Delete a worktree."""
     try:
         svc = _get_service()
-        metadata = svc._metadata
+        metadata = svc.metadata
 
         # Resolve identifier to entry
         entry = _resolve_identifier(metadata, identifier)
@@ -155,7 +155,7 @@ def delete(
         # Confirm
         typer.confirm(f"Delete worktree at {entry.path}?", abort=True)
 
-        _run(svc.delete_worktree(entry.id, delete_branch=branch))
+        _run(svc.delete_worktree(entry.id, delete_branch=branch, force=force))
         typer.echo(f"Deleted worktree: {entry.branch}")
         if branch:
             typer.echo(f"Deleted branch: {entry.branch}")
@@ -174,13 +174,7 @@ def list_cmd(
 
     # Trigger reconciliation
     if not repo:
-        repos = _run(svc._discovery.discover_repos())
-        for r in repos:
-            try:
-                worktrees = _run(git.list_worktrees(r.path))
-                svc._metadata.reconcile(worktrees)
-            except git.GitError:
-                pass
+        _run(svc.reconcile_all_repos())
 
     entries = _run(svc.list_worktrees(repo_name=repo))
 
@@ -230,7 +224,7 @@ def move(
     """Move a worktree to a new filesystem path."""
     try:
         svc = _get_service()
-        entry = _resolve_identifier(svc._metadata, identifier)
+        entry = _resolve_identifier(svc.metadata, identifier)
         if entry is None:
             typer.echo(f"No worktree found matching '{identifier}'", err=True)
             raise typer.Exit(1)
@@ -250,7 +244,7 @@ def switch(
     """Switch the branch of a worktree."""
     try:
         svc = _get_service()
-        entry = _resolve_identifier(svc._metadata, identifier)
+        entry = _resolve_identifier(svc.metadata, identifier)
         if entry is None:
             typer.echo(f"No worktree found matching '{identifier}'", err=True)
             raise typer.Exit(1)
@@ -268,7 +262,7 @@ def prune(
 ) -> None:
     """Clean up stale worktree references and orphaned metadata."""
     svc = _get_service()
-    repos = _run(svc._discovery.discover_repos())
+    repos = _run(svc.get_discovered_repos())
 
     stale_count = 0
     for r in repos:
@@ -278,9 +272,9 @@ def prune(
             continue
 
         # Check for entries that don't match git state
-        before = {e.id for e in svc._metadata.list_all()}
-        svc._metadata.reconcile(worktrees)
-        after = {e.id for e in svc._metadata.list_all()}
+        before = {e.id for e in svc.metadata.list_all()}
+        svc.metadata.reconcile(worktrees, repo_name=r.name)
+        after = {e.id for e in svc.metadata.list_all()}
         removed = before - after
 
         for entry_id in removed:
@@ -294,9 +288,9 @@ def prune(
                 pass
 
     # Check for orphaned directories under worktrees_dir
-    worktrees_dir = svc._config.resolve_worktrees_dir()
+    worktrees_dir = svc.config.resolve_worktrees_dir()
     if worktrees_dir.exists():
-        known_paths = {e.path for e in svc._metadata.list_all()}
+        known_paths = {e.path for e in svc.metadata.list_all()}
         for repo_dir in worktrees_dir.iterdir():
             if not repo_dir.is_dir():
                 continue
@@ -307,6 +301,9 @@ def prune(
                     typer.echo(f"  Orphaned directory: {wt_dir}")
                     stale_count += 1
                     if apply:
+                        if (wt_dir / ".git").exists():
+                            typer.echo(f"  Skipped (active git repo): {wt_dir}")
+                            continue
                         shutil.rmtree(wt_dir, ignore_errors=True)
                         typer.echo(f"  Removed: {wt_dir}")
 

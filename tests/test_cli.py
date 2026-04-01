@@ -237,7 +237,7 @@ class TestListCommand:
 
     def test_list_empty_message(self):
         mock_svc = MagicMock()
-        mock_svc._discovery.discover_repos = AsyncMock(return_value=[])
+        mock_svc.reconcile_all_repos = AsyncMock(return_value=None)
         mock_svc.list_worktrees = AsyncMock(return_value=[])
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
@@ -256,7 +256,7 @@ class TestListCommand:
 
     def test_list_json_empty_worktrees(self):
         mock_svc = MagicMock()
-        mock_svc._discovery.discover_repos = AsyncMock(return_value=[])
+        mock_svc.reconcile_all_repos = AsyncMock(return_value=None)
         mock_svc.list_worktrees = AsyncMock(return_value=[])
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
@@ -269,7 +269,7 @@ class TestListCommand:
     def test_list_json_with_entries(self):
         entry = _make_entry()
         mock_svc = MagicMock()
-        mock_svc._discovery.discover_repos = AsyncMock(return_value=[])
+        mock_svc.reconcile_all_repos = AsyncMock(return_value=None)
         mock_svc.list_worktrees = AsyncMock(return_value=[entry])
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
@@ -293,7 +293,7 @@ class TestListCommand:
     def test_list_text_with_entries(self):
         entry = _make_entry()
         mock_svc = MagicMock()
-        mock_svc._discovery.discover_repos = AsyncMock(return_value=[])
+        mock_svc.reconcile_all_repos = AsyncMock(return_value=None)
         mock_svc.list_worktrees = AsyncMock(return_value=[entry])
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
@@ -306,7 +306,7 @@ class TestListCommand:
     def test_list_text_shows_issue_id(self):
         entry = _make_entry(issue_id="TB-42")
         mock_svc = MagicMock()
-        mock_svc._discovery.discover_repos = AsyncMock(return_value=[])
+        mock_svc.reconcile_all_repos = AsyncMock(return_value=None)
         mock_svc.list_worktrees = AsyncMock(return_value=[entry])
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
@@ -328,7 +328,7 @@ class TestListCommand:
 
     def test_list_json_short_flag(self):
         mock_svc = MagicMock()
-        mock_svc._discovery.discover_repos = AsyncMock(return_value=[])
+        mock_svc.reconcile_all_repos = AsyncMock(return_value=None)
         mock_svc.list_worktrees = AsyncMock(return_value=[])
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
@@ -466,7 +466,7 @@ class TestDeleteCommand:
         mock_metadata.find_by_path.return_value = None
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
             result = runner.invoke(app, ["delete", "nonexistent"])
@@ -480,7 +480,7 @@ class TestDeleteCommand:
         mock_metadata.find_by_issue_id.return_value = [entry]
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
             # Input "n" to abort the confirmation
@@ -494,7 +494,7 @@ class TestDeleteCommand:
         mock_metadata.find_by_issue_id.return_value = [entry]
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
         mock_svc.delete_worktree = AsyncMock(return_value=None)
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
@@ -502,7 +502,7 @@ class TestDeleteCommand:
 
         assert result.exit_code == 0
         assert "Deleted worktree:" in result.stdout
-        mock_svc.delete_worktree.assert_called_once_with(entry.id, delete_branch=False)
+        mock_svc.delete_worktree.assert_called_once_with(entry.id, delete_branch=False, force=False)
 
     def test_delete_with_branch_flag(self):
         entry = _make_entry()
@@ -510,7 +510,7 @@ class TestDeleteCommand:
         mock_metadata.find_by_issue_id.return_value = [entry]
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
         mock_svc.delete_worktree = AsyncMock(return_value=None)
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
@@ -518,7 +518,7 @@ class TestDeleteCommand:
 
         assert result.exit_code == 0
         assert "Deleted branch:" in result.stdout
-        mock_svc.delete_worktree.assert_called_once_with(entry.id, delete_branch=True)
+        mock_svc.delete_worktree.assert_called_once_with(entry.id, delete_branch=True, force=False)
 
     def test_delete_uncommitted_changes_error(self):
         entry = _make_entry()
@@ -526,7 +526,7 @@ class TestDeleteCommand:
         mock_metadata.find_by_issue_id.return_value = [entry]
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
         mock_svc.delete_worktree = AsyncMock(
             side_effect=UncommittedChangesError("uncommitted changes")
         )
@@ -551,7 +551,7 @@ class TestMoveCommand:
         mock_metadata.find_by_path.return_value = None
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
             result = runner.invoke(app, ["move", "nonexistent", "/new/path"])
@@ -566,7 +566,7 @@ class TestMoveCommand:
         mock_metadata.find_by_issue_id.return_value = [entry]
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
         mock_svc.move_worktree = AsyncMock(return_value=updated)
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
@@ -582,7 +582,7 @@ class TestMoveCommand:
         mock_metadata.find_by_issue_id.return_value = [entry]
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
         mock_svc.move_worktree = AsyncMock(
             side_effect=UncommittedChangesError("uncommitted changes")
         )
@@ -599,7 +599,7 @@ class TestMoveCommand:
         mock_metadata.find_by_issue_id.return_value = [entry]
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
         mock_svc.move_worktree = AsyncMock(
             side_effect=WorktreeNotFoundError("not found")
         )
@@ -624,7 +624,7 @@ class TestSwitchCommand:
         mock_metadata.find_by_path.return_value = None
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
             result = runner.invoke(app, ["switch", "nonexistent", "new-branch"])
@@ -639,7 +639,7 @@ class TestSwitchCommand:
         mock_metadata.find_by_issue_id.return_value = [entry]
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
         mock_svc.switch_branch = AsyncMock(return_value=updated)
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
@@ -655,7 +655,7 @@ class TestSwitchCommand:
         mock_metadata.find_by_issue_id.return_value = [entry]
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
         mock_svc.switch_branch = AsyncMock(
             side_effect=BranchCheckedOutError("already checked out")
         )
@@ -672,7 +672,7 @@ class TestSwitchCommand:
         mock_metadata.find_by_issue_id.return_value = [entry]
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
         mock_svc.switch_branch = AsyncMock(
             side_effect=InvalidInputError("branch not found")
         )
@@ -689,7 +689,7 @@ class TestSwitchCommand:
         mock_metadata.find_by_issue_id.return_value = [entry]
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
         mock_svc.switch_branch = AsyncMock(
             side_effect=UncommittedChangesError("uncommitted changes")
         )
@@ -713,9 +713,9 @@ class TestPruneCommand:
 
     def test_prune_no_stale(self):
         mock_svc = MagicMock()
-        mock_svc._discovery.discover_repos = AsyncMock(return_value=[])
-        mock_svc._metadata.list_all.return_value = []
-        mock_svc._config.resolve_worktrees_dir.return_value = Path("/nonexistent/path")
+        mock_svc.get_discovered_repos = AsyncMock(return_value=[])
+        mock_svc.metadata.list_all.return_value = []
+        mock_svc.config.resolve_worktrees_dir.return_value = Path("/nonexistent/path")
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
             result = runner.invoke(app, ["prune"])
@@ -725,9 +725,9 @@ class TestPruneCommand:
 
     def test_prune_apply_flag(self):
         mock_svc = MagicMock()
-        mock_svc._discovery.discover_repos = AsyncMock(return_value=[])
-        mock_svc._metadata.list_all.return_value = []
-        mock_svc._config.resolve_worktrees_dir.return_value = Path("/nonexistent/path")
+        mock_svc.get_discovered_repos = AsyncMock(return_value=[])
+        mock_svc.metadata.list_all.return_value = []
+        mock_svc.config.resolve_worktrees_dir.return_value = Path("/nonexistent/path")
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
             result = runner.invoke(app, ["prune", "--apply"])
@@ -794,7 +794,7 @@ class TestResolveIdentifier:
         mock_metadata.find_by_issue_id.return_value = [entry1, entry2]
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
         mock_svc.delete_worktree = AsyncMock(return_value=None)
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
@@ -803,7 +803,7 @@ class TestResolveIdentifier:
 
         assert result.exit_code == 0
         assert "Multiple worktrees match" in result.output
-        mock_svc.delete_worktree.assert_called_once_with("id-1", delete_branch=False)
+        mock_svc.delete_worktree.assert_called_once_with("id-1", delete_branch=False, force=False)
 
     def test_resolve_multiple_matches_invalid_choice_via_delete(self):
         """Out-of-range choice returns None and exits with error."""
@@ -814,7 +814,7 @@ class TestResolveIdentifier:
         mock_metadata.find_by_issue_id.return_value = [entry1, entry2]
 
         mock_svc = MagicMock()
-        mock_svc._metadata = mock_metadata
+        mock_svc.metadata = mock_metadata
 
         with patch("gwt_worktree_manager.cli._get_service", return_value=mock_svc):
             # Choice 99 is out of range

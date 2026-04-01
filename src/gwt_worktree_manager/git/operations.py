@@ -61,11 +61,13 @@ def validate_branch_name(branch: str) -> None:
 async def run_git_command(
     args: list[str],
     cwd: Path | None = None,
+    timeout: float = 30.0,
 ) -> tuple[str, str, int]:
     """Run a git command and return (stdout, stderr, returncode).
 
     Uses argument list — never shell=True.
     Raises GitNotFoundError if git binary is not found.
+    Raises GitError if the command times out.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -75,7 +77,12 @@ async def run_git_command(
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise GitError(["git"] + list(args), f"Command timed out after {timeout}s", -1)
         return stdout.decode(), stderr.decode(), proc.returncode
     except FileNotFoundError:
         raise GitNotFoundError()

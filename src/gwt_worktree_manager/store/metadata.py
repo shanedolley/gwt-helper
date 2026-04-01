@@ -214,12 +214,12 @@ class MetadataStore:
         return None
 
     def list_all(self) -> list[WorktreeEntry]:
-        """List all entries."""
-        return list(self._entries.values())
+        """List all entries sorted by last_accessed descending."""
+        return sorted(self._entries.values(), key=lambda e: e.last_accessed or "", reverse=True)
 
     # Reconciliation (FR-023, FR-024)
 
-    def reconcile(self, git_worktrees: list) -> None:
+    def reconcile(self, git_worktrees: list, repo_name: str = "") -> None:
         """Reconcile metadata with Git worktree state.
 
         Git state is authoritative for worktree existence.
@@ -228,6 +228,7 @@ class MetadataStore:
         Args:
             git_worktrees: List of WorktreeInfo from git worktree list.
                            Must have .path and .branch attributes.
+            repo_name: Optional repo name to store in hydrated entries.
         """
         git_paths = {wt.path for wt in git_worktrees}
 
@@ -241,15 +242,16 @@ class MetadataStore:
             del self._entries[entry_id]
 
         # Hydrate missing entries (Git knows about it but no metadata)
+        changed = bool(stale_ids)
         existing_paths = {e.path for e in self._entries.values()}
         for wt in git_worktrees:
             if wt.path not in existing_paths and not getattr(wt, "is_bare", False):
-                self._hydrate_entry(wt)
-
-        if stale_ids or any(wt.path not in existing_paths for wt in git_worktrees):
+                self._hydrate_entry(wt, repo_name)
+                changed = True
+        if changed:
             self._save()
 
-    def _hydrate_entry(self, wt) -> None:
+    def _hydrate_entry(self, wt, repo_name: str = "") -> None:
         """Create a metadata entry from a Git worktree.
 
         Extracts issue_id and work_type from branch name.
@@ -260,7 +262,7 @@ class MetadataStore:
         now = datetime.now(timezone.utc).isoformat()
         entry = WorktreeEntry(
             id=str(uuid.uuid4()),
-            repo_name="",
+            repo_name=repo_name,
             branch=branch,
             path=wt.path,
             issue_id=issue_id,

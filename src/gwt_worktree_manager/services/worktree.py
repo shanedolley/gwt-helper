@@ -9,9 +9,12 @@ import shutil
 import uuid
 
 from gwt_worktree_manager.config.manager import Config
-from gwt_worktree_manager.store.metadata import MetadataStore, WorktreeEntry
+from gwt_worktree_manager.store.metadata import MetadataStore, WorktreeEntry, _ISSUE_ID_RE
 from gwt_worktree_manager.services.discovery import RepoDiscovery
 from gwt_worktree_manager.git import operations as git
+from gwt_worktree_manager.integrations import IssueCache, IssueInfo
+from gwt_worktree_manager.integrations.linear import LinearClient
+from gwt_worktree_manager.integrations.ado import ADOClient
 
 
 # ==============================================================================
@@ -63,7 +66,6 @@ class OpenResult:
 # ==============================================================================
 
 VALID_WORK_TYPES = {"feature", "bug", "chore", "doc", "refactor", "hotfix"}
-_ISSUE_ID_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$")
 
 
 def to_kebab_case(text: str) -> str:
@@ -132,6 +134,9 @@ class WorktreeService:
         self._config = config
         self._metadata = metadata
         self._discovery = discovery
+        self._issue_cache = IssueCache(ttl_seconds=config.cache_ttl)
+        self._linear_client = LinearClient.from_config(config.linear.api_key_env, self._issue_cache) if config.linear.enabled else None
+        self._ado_client = ADOClient.from_config(config.ado.org_url_env, config.ado.pat_env, self._issue_cache) if config.ado.enabled else None
 
     async def create_worktree(
         self,
@@ -173,15 +178,23 @@ class WorktreeService:
             )
 
         # 7. Create worktree path
+        if ".." in branch_name:
+            raise InvalidInputError("Branch name cannot contain '..'")
         worktrees_dir = self._config.resolve_worktrees_dir()
         worktree_path = worktrees_dir / repo_name / branch_name
+        try:
+            worktree_path.resolve().relative_to(worktrees_dir.resolve())
+        except ValueError:
+            raise InvalidInputError(
+                "Worktree path would escape the configured worktrees directory"
+            )
 
         # 8. Create worktree
         try:
             await git.create_worktree(
                 repo_path, branch_name, worktree_path, source_branch
             )
-        except git.GitError:
+        except (git.GitError, KeyboardInterrupt):
             await git.prune_worktrees(repo_path)
             if worktree_path.exists():
                 shutil.rmtree(worktree_path, ignore_errors=True)
@@ -205,7 +218,7 @@ class WorktreeService:
         return entry
 
     async def delete_worktree(
-        self, worktree_id: str, delete_branch: bool = False
+        self, worktree_id: str, delete_branch: bool = False, force: bool = False
     ) -> None:
         """Delete a worktree and optionally its branch."""
         entry = self._metadata.get(worktree_id)
@@ -217,18 +230,20 @@ class WorktreeService:
 
         if worktree_path.exists():
             status = await git.get_worktree_status(worktree_path)
-            if status.strip():
-                await git.remove_worktree(repo_path, worktree_path, force=True)
-            else:
-                await git.remove_worktree(repo_path, worktree_path)
+            if status.strip() and not force:
+                raise UncommittedChangesError(
+                    f"Worktree at {worktree_path} has uncommitted changes. Use --force to override."
+                )
+            await git.remove_worktree(repo_path, worktree_path, force=bool(status.strip()))
         else:
             await git.prune_worktrees(repo_path)
 
         if delete_branch and entry.branch:
             try:
                 await git.delete_branch(repo_path, entry.branch, force=True)
-            except git.GitError:
-                pass
+            except git.GitError as e:
+                import warnings
+                warnings.warn(f"Failed to delete branch {entry.branch}: {e}")
 
         self._metadata.delete(worktree_id)
 
@@ -333,6 +348,42 @@ class WorktreeService:
     async def search_by_issue(self, issue_id: str) -> list[WorktreeEntry]:
         """Search for worktrees by issue ID across all repos."""
         return self._metadata.find_by_issue_id(issue_id)
+
+    @property
+    def config(self) -> Config:
+        return self._config
+
+    @property
+    def metadata(self) -> MetadataStore:
+        return self._metadata
+
+    async def reconcile_all_repos(self) -> None:
+        """Discover repos and reconcile metadata with Git state."""
+        repos = await self._discovery.discover_repos()
+        for repo in repos:
+            try:
+                worktrees = await git.list_worktrees(repo.path)
+                self._metadata.reconcile(worktrees, repo_name=repo.name)
+            except git.GitError:
+                pass
+
+    async def get_discovered_repos(self):
+        """Return discovered repos."""
+        return await self._discovery.discover_repos()
+
+    async def get_issue_info(self, issue_id: str) -> "IssueInfo | None":
+        """Try to fetch issue info from Linear then ADO."""
+        if not issue_id:
+            return None
+        if self._linear_client:
+            info = await self._linear_client.get_issue(issue_id)
+            if info:
+                return info
+        if self._ado_client:
+            info = await self._ado_client.get_work_item(issue_id)
+            if info:
+                return info
+        return None
 
     async def _resolve_repo(self, repo_name: str) -> Path:
         """Find the path for a repo by name."""
