@@ -78,8 +78,11 @@ class RepoDiscovery:
             try:
                 resolved = entry.resolve()
                 worktrees_resolved = self._worktrees_dir.resolve()
-                if str(resolved).startswith(str(worktrees_resolved)):
+                try:
+                    resolved.relative_to(worktrees_resolved)
                     continue
+                except ValueError:
+                    pass
             except OSError:
                 continue
 

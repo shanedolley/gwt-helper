@@ -37,11 +37,16 @@ class Config:
     default_issue_tracker: str = "ado"
     default_issue_url_templates: dict[str, str] = field(
         default_factory=lambda: {
-            "ado": "https://dev.azure.com/DolcheVentures/Talentblocks%20Marketplace/_workitems/edit/{issue_id}",
+            "ado": "",
             "linear": "",
         }
     )
     cache_ttl: int = 300
+    terminal: str = "terminal"
+    ai_assistant: str = "none"
+    editor: str = "terminal"
+    editor_terminal: str = ""
+    git_hosting: str = ""
     linear: IntegrationConfig = field(default_factory=IntegrationConfig)
     ado: IntegrationConfig = field(default_factory=IntegrationConfig)
     repos: dict[str, RepoConfig] = field(default_factory=dict)
@@ -80,7 +85,8 @@ def load_config(config_path: Path | None = None) -> Config:
     If the file doesn't exist, returns Config with defaults.
     """
     if config_path is None:
-        config_path = Path.home() / ".config" / "gwt" / "config.toml"
+        from gwt_worktree_manager.platform_utils import get_config_dir
+        config_path = get_config_dir() / "config.toml"
 
     if not config_path.exists():
         return Config()
@@ -110,6 +116,11 @@ def _parse_config(data: dict) -> Config:
             **general.get("default_issue_url_templates", {}),
         },
         cache_ttl=general.get("cache_ttl", 300),
+        terminal=general.get("terminal", "terminal"),
+        ai_assistant=general.get("ai_assistant", "none"),
+        editor=general.get("editor", "terminal"),
+        editor_terminal=general.get("editor_terminal", ""),
+        git_hosting=general.get("git_hosting", ""),
     )
 
     # Parse integrations

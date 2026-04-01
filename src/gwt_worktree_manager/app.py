@@ -1,6 +1,10 @@
 """Textual TUI application for GWT Worktree Manager."""
 
+import asyncio
+import platform
+import shutil
 import subprocess
+import webbrowser
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -14,6 +18,7 @@ from gwt_worktree_manager.config.manager import load_config
 from gwt_worktree_manager.git import operations as git
 from gwt_worktree_manager.services.discovery import RepoDiscovery
 from gwt_worktree_manager.services.hooks import HookRunner
+from gwt_worktree_manager.services.terminal import TerminalOpener
 from gwt_worktree_manager.services.worktree import WorktreeService, UncommittedChangesError
 from gwt_worktree_manager.store.metadata import MetadataStore, WorktreeEntry
 from gwt_worktree_manager.store.ui_state import UIStateStore
@@ -37,6 +42,7 @@ class GWTCommands(Provider):
             ("Refresh", "refresh"),
             ("Copy Path", "yank"),
             ("Open Issue URL", "open_issue_url"),
+            ("Edit in Editor", "edit_worktree"),
         ]
         for name, action in commands:
             score = matcher.match(name)
@@ -115,6 +121,7 @@ class GWTApp(App):
         Binding("ctrl+m", "move_worktree", "Move", key_display="ctrl+m"),
         Binding("ctrl+s", "switch_worktree", "Switch", key_display="ctrl+s"),
         Binding("ctrl+u", "open_issue_url", "Open URL", key_display="ctrl+u"),
+        Binding("ctrl+e", "edit_worktree", "Edit", key_display="ctrl+e"),
     ]
 
     def __init__(self) -> None:
@@ -125,6 +132,10 @@ class GWTApp(App):
         self._discovery = RepoDiscovery(self._config)
         self._service = WorktreeService(self._config, self._metadata, self._discovery)
         self._hook_runner = HookRunner(self._config)
+        self._terminal_opener = TerminalOpener(
+            terminal=self._config.terminal,
+            ai_assistant=self._config.ai_assistant,
+        )
         self._repos: list = []
         self._selected_repo = None
 
@@ -234,7 +245,7 @@ class GWTApp(App):
                     worktree_panel = self.query_one(WorktreePanel)
                     worktree_panel.set_worktrees(entries)
                     worktree_panel.select_by_id(entry.id)
-                await self._open_in_cmux(entry)
+                await self._open_worktree_in_terminal(entry)
             except Exception as e:
                 status.update_status(f"Error: {e}")
 
@@ -286,110 +297,56 @@ class GWTApp(App):
             )
             worktree_panel.set_worktrees(entries)
 
+    @work
     async def action_open_worktree(self) -> None:
-        """Open the selected worktree in cmux, switching if already open."""
+        """Open the selected worktree using the configured terminal."""
         worktree_panel = self.query_one(WorktreePanel)
         entry = worktree_panel.get_selected()
         if entry is None:
             return
-        await self._open_in_cmux(entry)
+        await self._open_worktree_in_terminal(entry)
 
-    async def _open_in_cmux(self, entry: WorktreeEntry) -> None:
-        """Open a worktree entry in cmux, switching if already open."""
+    async def _open_worktree_in_terminal(self, entry: WorktreeEntry) -> None:
+        """Open a worktree entry using the configured terminal/multiplexer."""
         try:
             await self._service.open_worktree(entry.id)
-            result = subprocess.run(
-                ["cmux", "list-workspaces"],
-                capture_output=True, text=True,
+            status_msg = await asyncio.to_thread(
+                self._terminal_opener.open, entry.branch, entry.path
             )
-            existing_ref = None
-            for line in result.stdout.splitlines():
-                parts = line.strip().lstrip("* ").split(None, 1)
-                if len(parts) == 2:
-                    ref, name = parts[0], parts[1]
-                    clean_name = name.split("[")[0].strip()
-                    if clean_name == entry.branch:
-                        existing_ref = ref
-                        break
-
-            if existing_ref:
-                subprocess.run(
-                    ["cmux", "select-workspace", "--workspace", existing_ref],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                self.query_one(GWTStatusBar).update_status(f"Switched to: {entry.branch}")
-            else:
-                self._create_cmux_workspace(entry.branch, entry.path)
-                self.query_one(GWTStatusBar).update_status(f"Opened: {entry.branch}")
+            self.query_one(GWTStatusBar).update_status(status_msg)
         except Exception as e:
             self.query_one(GWTStatusBar).update_status(f"Error: {e}")
 
-    @staticmethod
-    def _parse_ref(output: str, prefix: str) -> str | None:
-        """Parse a ref like 'workspace:3' from cmux output."""
-        for part in output.strip().split():
-            if part.startswith(prefix):
-                return part
-        return None
-
-    def _create_cmux_workspace(self, name: str, cwd: str) -> None:
-        """Create a cmux workspace with claude, lazygit, and terminal tabs."""
-        import time
-
-        # Tab 1: create workspace (gets a default terminal)
-        ws_out = subprocess.run(
-            ["cmux", "new-workspace", "--name", name, "--cwd", cwd],
-            capture_output=True, text=True,
-        )
-        ws_ref = self._parse_ref(ws_out.stdout, "workspace:")
-        if not ws_ref:
+    @work
+    async def action_edit_worktree(self) -> None:
+        """Open the selected worktree in the configured editor."""
+        worktree_panel = self.query_one(WorktreePanel)
+        entry = worktree_panel.get_selected()
+        if entry is None:
             return
 
-        # Get the first surface (tab 1) to send claude to it
-        surfaces_out = subprocess.run(
-            ["cmux", "list-pane-surfaces", "--workspace", ws_ref],
-            capture_output=True, text=True,
-        )
-        first_surface = self._parse_ref(surfaces_out.stdout, "surface:")
+        editor = self._config.editor
 
-        # Send claude to tab 1
-        if first_surface:
-            subprocess.run(
-                ["cmux", "send", "--workspace", ws_ref,
-                 "--surface", first_surface, "claude\n"],
-                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        if editor == "terminal":
+            # Use editor_terminal if set, otherwise fall back to default terminal
+            term = self._config.editor_terminal or self._config.terminal
+            opener = TerminalOpener(terminal=term, ai_assistant="none")
+            await asyncio.to_thread(opener.open, entry.branch, entry.path)
+            self.query_one(GWTStatusBar).update_status(f"Opened terminal: {entry.branch}")
+            return
+
+        cmd = editor
+        try:
+            subprocess.Popen(
+                [cmd, entry.path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
+            self.query_one(GWTStatusBar).update_status(f"Opened in {editor}: {entry.branch}")
+        except FileNotFoundError:
+            self.query_one(GWTStatusBar).update_status(f"Editor not found: {cmd}")
 
-        # Tab 2: plain terminal
-        subprocess.run(
-            ["cmux", "new-surface", "--workspace", ws_ref],
-            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-
-        # Tab 3: lazygit
-        tab3_out = subprocess.run(
-            ["cmux", "new-surface", "--workspace", ws_ref],
-            capture_output=True, text=True,
-        )
-        tab3_surface = self._parse_ref(tab3_out.stdout, "surface:")
-        if tab3_surface:
-            time.sleep(0.3)
-            subprocess.run(
-                ["cmux", "send", "--workspace", ws_ref,
-                 "--surface", tab3_surface, "lazygit\n"],
-                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-
-        # Focus back to tab 1 (claude)
-        if first_surface:
-            subprocess.run(
-                ["cmux", "tab-action", "--action", "select",
-                 "--tab", first_surface, "--workspace", ws_ref],
-                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-
+    @work
     async def action_open_issue_url(self) -> None:
         """Open the issue URL for the selected worktree in the browser."""
         worktree_panel = self.query_one(WorktreePanel)
@@ -400,8 +357,7 @@ class GWTApp(App):
         if not url:
             self.query_one(GWTStatusBar).update_status("No issue URL for this worktree")
             return
-        import webbrowser
-        webbrowser.open(url)
+        await asyncio.to_thread(webbrowser.open, url)
         self.query_one(GWTStatusBar).update_status(f"Opened: {url}")
 
     async def action_refresh(self) -> None:
@@ -427,15 +383,14 @@ class GWTApp(App):
 
         status.update_status(f"Ready | {len(self._repos)} repos")
 
+    @work
     async def action_yank(self) -> None:
         """Copy the selected worktree path to the clipboard."""
         worktree_panel = self.query_one(WorktreePanel)
         entry = worktree_panel.get_selected()
         if entry:
             try:
-                subprocess.run(
-                    ["pbcopy"], input=entry.path.encode(), check=True
-                )
+                self._copy_to_clipboard(entry.path)
                 self.query_one(GWTStatusBar).update_status(
                     f"Copied: {entry.path}"
                 )
@@ -443,6 +398,31 @@ class GWTApp(App):
                 self.query_one(GWTStatusBar).update_status(
                     f"Path: {entry.path}"
                 )
+
+    @staticmethod
+    def _copy_to_clipboard(text: str) -> None:
+        """Copy text to clipboard using OS-appropriate command."""
+        system = platform.system()
+        if system == "Darwin":
+            subprocess.run(["pbcopy"], input=text.encode(), check=True)
+        elif system == "Windows":
+            subprocess.run(["clip"], input=text.encode(), check=True)
+        else:
+            # Linux: try wl-copy (Wayland), then xclip, then xsel
+            if shutil.which("wl-copy"):
+                subprocess.run(["wl-copy"], input=text.encode(), check=True)
+            elif shutil.which("xclip"):
+                subprocess.run(
+                    ["xclip", "-selection", "clipboard"],
+                    input=text.encode(), check=True,
+                )
+            elif shutil.which("xsel"):
+                subprocess.run(
+                    ["xsel", "--clipboard", "--input"],
+                    input=text.encode(), check=True,
+                )
+            else:
+                raise RuntimeError("No clipboard tool found (wl-copy, xclip, or xsel)")
 
     def action_focus_next_panel(self) -> None:
         """Cycle focus to the next focusable panel."""
@@ -459,7 +439,7 @@ class GWTApp(App):
     async def action_help(self) -> None:
         """Show keyboard shortcut help."""
         self.notify(
-            "^N=New ^D=Delete ^O=Open ^R=Refresh ^Y=Copy ^M=Move ^S=Switch ^U=URL ^Q=Quit Tab=Panel",
+            "^N=New ^D=Delete ^O=Open ^E=Edit ^R=Refresh ^Y=Copy ^U=URL ^Q=Quit Tab=Panel",
             title="Keyboard Shortcuts",
             timeout=5,
         )

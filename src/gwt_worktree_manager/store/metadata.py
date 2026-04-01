@@ -73,9 +73,11 @@ class MetadataStore:
     """JSON-based metadata persistence with UUID-keyed entries."""
 
     def __init__(self, metadata_path: Path | None = None):
-        self._path = metadata_path or (
-            Path.home() / ".local" / "share" / "gwt" / "metadata.json"
-        )
+        if metadata_path:
+            self._path = metadata_path
+        else:
+            from gwt_worktree_manager.platform_utils import get_data_dir
+            self._path = get_data_dir() / "metadata.json"
         self._entries: dict[str, WorktreeEntry] = {}
         self._load()
 
@@ -116,7 +118,9 @@ class MetadataStore:
                 continue  # Skip malformed entries
 
     def _check_permissions(self) -> None:
-        """Warn if metadata file has overly permissive permissions."""
+        """Warn if metadata file has overly permissive permissions (Unix only)."""
+        if os.name == "nt":
+            return
         try:
             stat = os.stat(self._path)
             mode = stat.st_mode & 0o777
@@ -140,7 +144,8 @@ class MetadataStore:
         except FileNotFoundError:
             pass
 
-        fd = os.open(str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        mode = 0o600 if os.name != "nt" else 0o666
+        fd = os.open(str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(self._to_dict(), f, indent=2)
@@ -153,7 +158,7 @@ class MetadataStore:
                 pass
             raise
 
-        os.rename(str(temp_path), str(self._path))
+        os.replace(str(temp_path), str(self._path))
 
     def _to_dict(self) -> dict:
         """Convert entries to serializable dict."""

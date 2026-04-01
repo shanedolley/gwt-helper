@@ -147,7 +147,7 @@ class HookRunner:
                 stderr=asyncio.subprocess.STDOUT,  # Merge stderr into stdout
                 cwd=cwd,
                 env=env,
-                start_new_session=True,
+                start_new_session=(os.name != "nt"),
             )
 
             try:
@@ -158,16 +158,22 @@ class HookRunner:
                 )
                 await proc.wait()
             except asyncio.TimeoutError:
-                # Kill the process group
+                # Kill the process (group on Unix, direct on Windows)
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    if os.name != "nt":
+                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    else:
+                        proc.terminate()
                 except (ProcessLookupError, PermissionError):
                     pass
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5)
                 except asyncio.TimeoutError:
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        if os.name != "nt":
+                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        else:
+                            proc.kill()
                     except (ProcessLookupError, PermissionError):
                         pass
 

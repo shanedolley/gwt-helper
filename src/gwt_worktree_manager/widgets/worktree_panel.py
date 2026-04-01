@@ -133,6 +133,8 @@ class WorktreePanel(Static):
                 or query in (e.work_type or "").lower()
             ]
 
+        self._filtered_entries = filtered
+
         if not filtered:
             self._empty_label.display = True
             self._table.display = False
@@ -151,7 +153,6 @@ class WorktreePanel(Static):
                 entry.work_type or "-",
                 key=entry.id,
             )
-        self._filtered_entries = filtered
 
     def get_selected(self) -> WorktreeEntry | None:
         """Return the currently highlighted worktree entry."""

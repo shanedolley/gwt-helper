@@ -252,14 +252,12 @@ class CreateDialog(ModalScreen):
                 return
             issue_id = self.query_one("#issue-input", Input).value
             desc = self.query_one("#desc-input", Input).value
-            if (
-                work_type is not Select.NULL
-                and work_type
-                and issue_id
-                and desc
-            ):
+            if work_type is not Select.NULL and work_type and desc:
                 kebab = to_kebab_case(desc)
-                preview = f"Preview: {work_type}/{issue_id}-{kebab}"
+                if issue_id:
+                    preview = f"Preview: {work_type}/{issue_id}-{kebab}"
+                else:
+                    preview = f"Preview: {work_type}/{kebab}"
                 self.query_one("#preview-label", Label).update(preview)
             else:
                 self.query_one("#preview-label", Label).update("")
@@ -325,9 +323,6 @@ class CreateDialog(ModalScreen):
         desc = self.query_one("#desc-input", Input).value.strip()
         source = source_val if source_val is not Select.BLANK else None
 
-        if not issue_id:
-            self.notify("Please enter an issue ID", severity="error")
-            return
         if not desc:
             self.notify("Please enter a description", severity="error")
             return

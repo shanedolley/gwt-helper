@@ -62,6 +62,25 @@ def main(
 
 
 @app.command()
+def setup() -> None:
+    """Run the interactive setup wizard to configure GWT."""
+    from gwt_worktree_manager.config.wizard import run_wizard, write_config, print_summary
+
+    from gwt_worktree_manager.platform_utils import get_config_dir
+    config_path = get_config_dir() / "config.toml"
+    if config_path.exists():
+        if not typer.confirm(
+            f"Config already exists at {config_path}. Overwrite?",
+            default=False,
+        ):
+            raise typer.Exit()
+
+    config = run_wizard()
+    path = write_config(config)
+    print_summary(config, path)
+
+
+@app.command()
 def create(
     repo: str = typer.Option(..., "--repo", "-r", help="Repository name"),
     work_type: str = typer.Option(
@@ -315,15 +334,22 @@ def prune(
 
 @app.command("shell-init")
 def shell_init(
-    shell: str = typer.Argument("zsh", help="Shell type (zsh or bash)"),
+    shell: str = typer.Argument("zsh", help="Shell type (zsh, bash, fish, or powershell)"),
 ) -> None:
     """Output shell wrapper function for cd integration."""
-    if shell == "zsh":
-        typer.echo(ZSH_WRAPPER)
-    elif shell == "bash":
-        typer.echo(BASH_WRAPPER)
+    wrappers = {
+        "zsh": ZSH_WRAPPER,
+        "bash": BASH_WRAPPER,
+        "fish": FISH_WRAPPER,
+        "powershell": POWERSHELL_WRAPPER,
+        "pwsh": POWERSHELL_WRAPPER,
+    }
+    wrapper = wrappers.get(shell)
+    if wrapper:
+        typer.echo(wrapper)
     else:
-        typer.echo(f"Unsupported shell: {shell}. Use 'zsh' or 'bash'.", err=True)
+        supported = ", ".join(sorted(wrappers.keys()))
+        typer.echo(f"Unsupported shell: {shell}. Supported: {supported}", err=True)
         raise typer.Exit(1)
 
 
@@ -353,6 +379,30 @@ BASH_WRAPPER = """gwt() {
     echo "$output"
   fi
   return $exit_code
+}"""
+
+FISH_WRAPPER = """function gwt
+  set -x GWT_SHELL_WRAPPER 1
+  set -l output (command gwt $argv)
+  set -l exit_code $status
+  if string match -qr '__GWT_CD__:(.+)' -- $output
+    cd (string match -r '__GWT_CD__:(.+)' -- $output)[2]
+  else if test -n "$output"
+    echo $output
+  end
+  return $exit_code
+end"""
+
+POWERSHELL_WRAPPER = """function gwt {
+  $env:GWT_SHELL_WRAPPER = "1"
+  $output = & (Get-Command gwt -CommandType Application -ErrorAction Stop).Source @args
+  $exitCode = $LASTEXITCODE
+  if ($output -match '__GWT_CD__:(.+)') {
+    Set-Location $Matches[1]
+  } elseif ($output) {
+    Write-Output $output
+  }
+  $global:LASTEXITCODE = $exitCode
 }"""
 
 

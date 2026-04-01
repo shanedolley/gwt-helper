@@ -83,15 +83,21 @@ def to_kebab_case(text: str) -> str:
 def generate_branch_name(work_type: str, issue_id: str, description: str) -> str:
     """Generate a branch name from components.
 
-    Format: type/issueId-kebab-description
-    Example: feature/TB-123-add-user-profile
+    Format with issue ID: type/issueId-kebab-description
+    Format without:       type/kebab-description
+    Examples:
+        feature/TB-123-add-user-profile
+        chore/update-dependencies
     """
     kebab = to_kebab_case(description)
     if not kebab:
         raise InvalidInputError(
             "Description produced an empty branch slug after conversion"
         )
-    branch = f"{work_type}/{issue_id}-{kebab}"
+    if issue_id:
+        branch = f"{work_type}/{issue_id}-{kebab}"
+    else:
+        branch = f"{work_type}/{kebab}"
     if len(branch) >= 200:
         raise InvalidInputError(
             f"Branch name too long ({len(branch)} chars, must be under 200)"
@@ -153,8 +159,9 @@ class WorktreeService:
         """Create a new worktree with a new branch."""
         # 1. Validate inputs
         validate_work_type(work_type)
-        validate_issue_id(issue_id)
-        git.validate_branch_name(f"{work_type}/{issue_id}")
+        if issue_id:
+            validate_issue_id(issue_id)
+            git.validate_branch_name(f"{work_type}/{issue_id}")
 
         # 2. Find repo
         repo_path = await self._resolve_repo(repo_name)

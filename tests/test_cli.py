@@ -108,12 +108,22 @@ class TestShellInit:
         assert "GWT_SHELL_WRAPPER" in result.stdout
         assert "command gwt" in result.stdout
 
-    def test_unsupported_shell(self):
+    def test_fish_shell(self):
         result = runner.invoke(app, ["shell-init", "fish"])
+        assert result.exit_code == 0
+        assert "function gwt" in result.stdout
+
+    def test_powershell(self):
+        result = runner.invoke(app, ["shell-init", "powershell"])
+        assert result.exit_code == 0
+        assert "function gwt" in result.stdout
+
+    def test_unsupported_shell(self):
+        result = runner.invoke(app, ["shell-init", "csh"])
         assert result.exit_code == 1
 
     def test_unsupported_shell_error_message(self):
-        result = runner.invoke(app, ["shell-init", "fish"])
+        result = runner.invoke(app, ["shell-init", "csh"])
         assert "Unsupported shell" in result.output
 
 
