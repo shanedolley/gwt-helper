@@ -68,10 +68,17 @@ class TestVersion:
         assert "delete" in result.stdout
         assert "list" in result.stdout
 
-    def test_no_subcommand_shows_tui_placeholder(self):
-        result = runner.invoke(app, [])
-        assert result.exit_code == 0
-        assert "TUI not yet implemented" in result.stdout
+    def test_no_subcommand_launches_tui(self):
+        with patch("gwt_worktree_manager.app.run_tui", return_value=None) as mock_tui:
+            result = runner.invoke(app, [])
+            assert result.exit_code == 0
+            mock_tui.assert_called_once()
+
+    def test_no_subcommand_cd_result_is_echoed(self):
+        with patch("gwt_worktree_manager.app.run_tui", return_value="__GWT_CD__:/tmp/myrepo"):
+            result = runner.invoke(app, [])
+            assert result.exit_code == 0
+            assert "__GWT_CD__:/tmp/myrepo" in result.stdout
 
 
 # ---------------------------------------------------------------------------

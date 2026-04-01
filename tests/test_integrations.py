@@ -55,7 +55,7 @@ class TestLinearClient:
         respx.post(GRAPHQL_ENDPOINT).mock(
             return_value=httpx.Response(200, json={
                 "data": {
-                    "issueByIdentifier": {
+                    "issue": {
                         "title": "Add user profile",
                         "state": {"name": "In Progress"},
                         "assignee": {"name": "Shane"},
@@ -89,7 +89,7 @@ class TestLinearClient:
     @respx.mock
     async def test_not_found(self):
         respx.post(GRAPHQL_ENDPOINT).mock(
-            return_value=httpx.Response(200, json={"data": {"issueByIdentifier": None}})
+            return_value=httpx.Response(200, json={"data": {"issue": None}})
         )
         client = LinearClient("test-key")
         assert await client.get_issue("NONEXIST") is None

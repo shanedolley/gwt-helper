@@ -55,7 +55,10 @@ def main(
         typer.echo(f"gwt {__version__}")
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
-        typer.echo("TUI not yet implemented. Use --help to see available commands.")
+        from gwt_worktree_manager.app import run_tui
+        result = run_tui()
+        if result and isinstance(result, str) and result.startswith("__GWT_CD__:"):
+            typer.echo(result)
 
 
 @app.command()
