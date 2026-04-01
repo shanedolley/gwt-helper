@@ -97,13 +97,18 @@ class HookRunner:
             HooksResult with all individual results
         """
         repo_config = self._config.get_repo_config(repo_name)
-        hooks = repo_config.post_create
+        hooks = list(repo_config.post_create)
 
         if not hooks:
             # Try auto-detection
             detected = detect_package_manager(worktree_path)
             if detected:
                 hooks = [detected]
+
+        # Auto-trust mise if installed and .mise.toml exists in worktree
+        import shutil
+        if shutil.which("mise") and (worktree_path / ".mise.toml").exists():
+            hooks.insert(0, "mise trust")
 
         result = HooksResult()
         for cmd in hooks:
