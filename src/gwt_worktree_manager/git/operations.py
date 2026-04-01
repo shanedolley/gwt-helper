@@ -101,6 +101,26 @@ async def create_worktree(
         raise GitError(args, stderr, code)
 
 
+async def create_worktree_existing_branch(
+    repo_path: Path,
+    branch: str,
+    worktree_path: Path,
+) -> None:
+    """Create a worktree for an existing branch (no new branch created)."""
+    args = ["worktree", "add", str(worktree_path), branch]
+    stdout, stderr, code = await run_git_command(args, cwd=repo_path)
+    if code != 0:
+        raise GitError(args, stderr, code)
+
+
+async def fetch_branch(repo_path: Path, branch: str) -> None:
+    """Fetch a specific branch from origin."""
+    args = ["fetch", "origin", branch]
+    stdout, stderr, code = await run_git_command(args, cwd=repo_path)
+    if code != 0:
+        raise GitError(args, stderr, code)
+
+
 async def list_worktrees(repo_path: Path) -> list[WorktreeInfo]:
     """List all worktrees for a repo using porcelain output."""
     args = ["worktree", "list", "--porcelain"]

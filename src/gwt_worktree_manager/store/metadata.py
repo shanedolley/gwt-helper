@@ -19,6 +19,8 @@ class WorktreeEntry:
     branch: str
     path: str
     issue_id: str = ""
+    issue_tracker: str = ""
+    issue_url: str = ""
     work_type: str = ""
     source_branch: str = ""
     created_at: str = ""
@@ -102,6 +104,8 @@ class MetadataStore:
                     branch=entry_data.get("branch", ""),
                     path=entry_data.get("path", ""),
                     issue_id=entry_data.get("issue_id", ""),
+                    issue_tracker=entry_data.get("issue_tracker", ""),
+                    issue_url=entry_data.get("issue_url", ""),
                     work_type=entry_data.get("work_type", ""),
                     source_branch=entry_data.get("source_branch", ""),
                     created_at=entry_data.get("created_at", ""),
@@ -160,6 +164,8 @@ class MetadataStore:
                 "branch": entry.branch,
                 "path": entry.path,
                 "issue_id": entry.issue_id,
+                "issue_tracker": entry.issue_tracker,
+                "issue_url": entry.issue_url,
                 "work_type": entry.work_type,
                 "source_branch": entry.source_branch,
                 "created_at": entry.created_at,
@@ -233,10 +239,12 @@ class MetadataStore:
         git_paths = {wt.path for wt in git_worktrees}
 
         # Remove stale entries (metadata exists but Git doesn't know about it)
+        # Only check entries belonging to this repo to avoid deleting other repos' entries
         stale_ids = [
             entry_id
             for entry_id, entry in self._entries.items()
             if entry.path not in git_paths
+            and (not repo_name or entry.repo_name == repo_name)
         ]
         for entry_id in stale_ids:
             del self._entries[entry_id]

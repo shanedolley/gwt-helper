@@ -5,26 +5,54 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.command import Provider, Hit, Hits
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header
+from textual import work
 
 from gwt_worktree_manager.config.manager import load_config
 from gwt_worktree_manager.git import operations as git
 from gwt_worktree_manager.services.discovery import RepoDiscovery
 from gwt_worktree_manager.services.hooks import HookRunner
-from gwt_worktree_manager.services.worktree import WorktreeService
-from gwt_worktree_manager.store.metadata import MetadataStore
+from gwt_worktree_manager.services.worktree import WorktreeService, UncommittedChangesError
+from gwt_worktree_manager.store.metadata import MetadataStore, WorktreeEntry
+from gwt_worktree_manager.store.ui_state import UIStateStore
 from gwt_worktree_manager.widgets.detail_panel import DetailPanel
-from gwt_worktree_manager.widgets.dialogs import CreateDialog, DeleteDialog
+from gwt_worktree_manager.widgets.dialogs import CreateDialog, DeleteDialog, ForceDeleteDialog
 from gwt_worktree_manager.widgets.repo_panel import RepoPanel
+from gwt_worktree_manager.widgets.splitter import SplitterBar
 from gwt_worktree_manager.widgets.status_bar import GWTStatusBar
 from gwt_worktree_manager.widgets.worktree_panel import WorktreePanel
+
+
+class GWTCommands(Provider):
+    """Provide GWT actions to the command palette."""
+
+    async def search(self, query: str) -> Hits:
+        matcher = self.matcher(query)
+        commands = [
+            ("Create Worktree", "create"),
+            ("Delete Worktree", "delete_worktree"),
+            ("Open Worktree", "open_worktree"),
+            ("Refresh", "refresh"),
+            ("Copy Path", "yank"),
+            ("Open Issue URL", "open_issue_url"),
+        ]
+        for name, action in commands:
+            score = matcher.match(name)
+            if score > 0:
+                yield Hit(
+                    score,
+                    matcher.highlight(name),
+                    lambda a=action: self.app.run_action(a),
+                )
 
 
 class GWTApp(App):
     """GWT Worktree Manager TUI Application."""
 
     TITLE = "GWT Worktree Manager"
+    COMMANDS = App.COMMANDS | {GWTCommands}
 
     CSS = """
     Screen {
@@ -76,22 +104,24 @@ class GWTApp(App):
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("question_mark", "help", "Help"),
-        Binding("c", "create", "Create"),
-        Binding("d", "delete_worktree", "Delete"),
-        Binding("o", "open_worktree", "Open"),
-        Binding("r", "refresh", "Refresh"),
-        Binding("y", "yank", "Copy Path"),
+        Binding("ctrl+q", "quit", "Quit", key_display="ctrl+q"),
+        Binding("question_mark", "help", "Help", key_display="?"),
+        Binding("ctrl+n", "create", "New", key_display="ctrl+n"),
+        Binding("ctrl+d", "delete_worktree", "Delete", key_display="ctrl+d"),
+        Binding("ctrl+o", "open_worktree", "Open", key_display="ctrl+o"),
+        Binding("ctrl+r", "refresh", "Refresh", key_display="ctrl+r"),
+        Binding("ctrl+y", "yank", "Copy Path", key_display="ctrl+y"),
         Binding("tab", "focus_next_panel", "Next Panel"),
-        Binding("m", "move_worktree", "Move"),
-        Binding("s", "switch_worktree", "Switch"),
+        Binding("ctrl+m", "move_worktree", "Move", key_display="ctrl+m"),
+        Binding("ctrl+s", "switch_worktree", "Switch", key_display="ctrl+s"),
+        Binding("ctrl+u", "open_issue_url", "Open URL", key_display="ctrl+u"),
     ]
 
     def __init__(self) -> None:
         super().__init__()
         self._config = load_config()
         self._metadata = MetadataStore()
+        self._ui_state = UIStateStore()
         self._discovery = RepoDiscovery(self._config)
         self._service = WorktreeService(self._config, self._metadata, self._discovery)
         self._hook_runner = HookRunner(self._config)
@@ -104,6 +134,7 @@ class GWTApp(App):
         with Horizontal(id="main-area"):
             with Vertical(id="left-panel"):
                 yield RepoPanel(id="repo-panel")
+            yield SplitterBar(direction="horizontal", id="h-splitter")
             with Vertical(id="right-panel"):
                 yield WorktreePanel(id="worktree-panel")
                 yield DetailPanel(id="detail-panel")
@@ -112,6 +143,9 @@ class GWTApp(App):
 
     async def on_mount(self) -> None:
         """Load data after the app mounts."""
+        # Apply saved pane sizes
+        self.query_one("#left-panel").styles.width = self._ui_state.left_panel_width
+
         status = self.query_one(GWTStatusBar)
         status.update_status("Scanning repos...")
 
@@ -127,6 +161,7 @@ class GWTApp(App):
                 pass
 
         status.update_status(f"Ready | {len(self._repos)} repos")
+        repo_panel.focus_tree()
 
     async def on_repo_panel_repo_selected(self, event: RepoPanel.RepoSelected) -> None:
         """Handle repo selection from the repo panel."""
@@ -140,6 +175,25 @@ class GWTApp(App):
             f"Ready | {len(self._repos)} repos | {event.repo.name}"
         )
 
+    async def on_repo_panel_repo_confirmed(self, event: RepoPanel.RepoConfirmed) -> None:
+        """Handle Enter on a repo — focus the worktree panel."""
+        worktree_panel = self.query_one(WorktreePanel)
+        if worktree_panel._table is not None:
+            worktree_panel._table.focus()
+
+    def on_splitter_bar_resized(self, event: SplitterBar.Resized) -> None:
+        """Handle pane resize during splitter drag."""
+        if event.splitter.id == "h-splitter":
+            left = self.query_one("#left-panel")
+            new_width = left.size.width + event.delta
+            new_width = max(15, min(80, new_width))
+            left.styles.width = new_width
+            self._ui_state.left_panel_width = new_width
+
+    def on_splitter_bar_resize_complete(self, event: SplitterBar.ResizeComplete) -> None:
+        """Save pane sizes when drag finishes."""
+        self._ui_state.save()
+
     async def on_worktree_panel_worktree_selected(
         self, event: WorktreePanel.WorktreeSelected
     ) -> None:
@@ -147,15 +201,23 @@ class GWTApp(App):
         detail_panel = self.query_one(DetailPanel)
         detail_panel.set_worktree(event.entry)
 
+    @work
     async def action_create(self) -> None:
         """Open the create worktree dialog."""
-        dialog = CreateDialog(self._repos, self._config)
+        selected_name = self._selected_repo.name if self._selected_repo else None
+        dialog = CreateDialog(self._repos, self._config, default_repo=selected_name)
         result = await self.push_screen_wait(dialog)
         if result:
             status = self.query_one(GWTStatusBar)
             status.update_status("Creating worktree...")
             try:
-                entry = await self._service.create_worktree(**result)
+                if result.get("work_type") == "pr-review":
+                    entry = await self._service.create_pr_review_worktree(
+                        repo_name=result["repo_name"],
+                        pr_number=result["pr_number"],
+                    )
+                else:
+                    entry = await self._service.create_worktree(**result)
                 status.update_status("Running hooks...")
                 await self._hook_runner.run_post_create_hooks(
                     entry.repo_name,
@@ -169,10 +231,14 @@ class GWTApp(App):
                     entries = await self._service.list_worktrees(
                         repo_name=entry.repo_name
                     )
-                    self.query_one(WorktreePanel).set_worktrees(entries)
+                    worktree_panel = self.query_one(WorktreePanel)
+                    worktree_panel.set_worktrees(entries)
+                    worktree_panel.select_by_id(entry.id)
+                await self._open_in_cmux(entry)
             except Exception as e:
                 status.update_status(f"Error: {e}")
 
+    @work
     async def action_delete_worktree(self) -> None:
         """Delete the selected worktree after confirmation."""
         worktree_panel = self.query_one(WorktreePanel)
@@ -182,46 +248,183 @@ class GWTApp(App):
 
         dialog = DeleteDialog(entry)
         result = await self.push_screen_wait(dialog)
-        if result is not None:
-            status = self.query_one(GWTStatusBar)
+        if result is None:
+            return
+
+        status = self.query_one(GWTStatusBar)
+        delete_branch = result.get("delete_branch", False)
+
+        try:
+            await self._service.delete_worktree(
+                entry.id, delete_branch=delete_branch
+            )
+        except UncommittedChangesError as e:
+            force = await self.push_screen_wait(ForceDeleteDialog(str(e)))
+            if not force:
+                status.update_status("Delete cancelled")
+                return
             try:
                 await self._service.delete_worktree(
-                    entry.id, delete_branch=result.get("delete_branch", False)
+                    entry.id, delete_branch=delete_branch, force=True
                 )
-                status.update_status(f"Deleted: {entry.branch}")
-                if self._selected_repo:
-                    entries = await self._service.list_worktrees(
-                        repo_name=self._selected_repo.name
-                    )
-                    worktree_panel.set_worktrees(entries)
-            except Exception as e:
-                status.update_status(f"Error: {e}")
+            except Exception as e2:
+                status.update_status(f"Error: {e2}")
+                return
+        except Exception as e:
+            status.update_status(f"Error: {e}")
+            return
+
+        status.update_status(f"Deleted: {entry.branch}")
+        if self._selected_repo:
+            try:
+                worktrees = await git.list_worktrees(self._selected_repo.path)
+                self._metadata.reconcile(worktrees, repo_name=self._selected_repo.name)
+            except Exception:
+                pass
+            entries = await self._service.list_worktrees(
+                repo_name=self._selected_repo.name
+            )
+            worktree_panel.set_worktrees(entries)
 
     async def action_open_worktree(self) -> None:
-        """Open the selected worktree using the configured action."""
+        """Open the selected worktree in cmux, switching if already open."""
         worktree_panel = self.query_one(WorktreePanel)
         entry = worktree_panel.get_selected()
         if entry is None:
             return
+        await self._open_in_cmux(entry)
+
+    async def _open_in_cmux(self, entry: WorktreeEntry) -> None:
+        """Open a worktree entry in cmux, switching if already open."""
         try:
-            result = await self._service.open_worktree(entry.id)
-            if result.action == "cd":
-                self.exit(result=f"__GWT_CD__:{result.cd_path}")
-            else:
+            await self._service.open_worktree(entry.id)
+            result = subprocess.run(
+                ["cmux", "list-workspaces"],
+                capture_output=True, text=True,
+            )
+            existing_ref = None
+            for line in result.stdout.splitlines():
+                parts = line.strip().lstrip("* ").split(None, 1)
+                if len(parts) == 2:
+                    ref, name = parts[0], parts[1]
+                    clean_name = name.split("[")[0].strip()
+                    if clean_name == entry.branch:
+                        existing_ref = ref
+                        break
+
+            if existing_ref:
                 subprocess.run(
-                    result.command_executed,
-                    shell=True,
-                    cwd=entry.path,
+                    ["cmux", "select-workspace", "--workspace", existing_ref],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
+                self.query_one(GWTStatusBar).update_status(f"Switched to: {entry.branch}")
+            else:
+                self._create_cmux_workspace(entry.branch, entry.path)
+                self.query_one(GWTStatusBar).update_status(f"Opened: {entry.branch}")
         except Exception as e:
             self.query_one(GWTStatusBar).update_status(f"Error: {e}")
 
+    @staticmethod
+    def _parse_ref(output: str, prefix: str) -> str | None:
+        """Parse a ref like 'workspace:3' from cmux output."""
+        for part in output.strip().split():
+            if part.startswith(prefix):
+                return part
+        return None
+
+    def _create_cmux_workspace(self, name: str, cwd: str) -> None:
+        """Create a cmux workspace with claude, lazygit, and terminal tabs."""
+        import time
+
+        # Tab 1: create workspace (gets a default terminal)
+        ws_out = subprocess.run(
+            ["cmux", "new-workspace", "--name", name, "--cwd", cwd],
+            capture_output=True, text=True,
+        )
+        ws_ref = self._parse_ref(ws_out.stdout, "workspace:")
+        if not ws_ref:
+            return
+
+        # Get the first surface (tab 1) to send claude to it
+        surfaces_out = subprocess.run(
+            ["cmux", "list-pane-surfaces", "--workspace", ws_ref],
+            capture_output=True, text=True,
+        )
+        first_surface = self._parse_ref(surfaces_out.stdout, "surface:")
+
+        # Send claude to tab 1
+        if first_surface:
+            subprocess.run(
+                ["cmux", "send", "--workspace", ws_ref,
+                 "--surface", first_surface, "claude\n"],
+                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+
+        # Tab 2: plain terminal
+        subprocess.run(
+            ["cmux", "new-surface", "--workspace", ws_ref],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
+        # Tab 3: lazygit
+        tab3_out = subprocess.run(
+            ["cmux", "new-surface", "--workspace", ws_ref],
+            capture_output=True, text=True,
+        )
+        tab3_surface = self._parse_ref(tab3_out.stdout, "surface:")
+        if tab3_surface:
+            time.sleep(0.3)
+            subprocess.run(
+                ["cmux", "send", "--workspace", ws_ref,
+                 "--surface", tab3_surface, "lazygit\n"],
+                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+
+        # Focus back to tab 1 (claude)
+        if first_surface:
+            subprocess.run(
+                ["cmux", "tab-action", "--action", "select",
+                 "--tab", first_surface, "--workspace", ws_ref],
+                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+
+    async def action_open_issue_url(self) -> None:
+        """Open the issue URL for the selected worktree in the browser."""
+        worktree_panel = self.query_one(WorktreePanel)
+        entry = worktree_panel.get_selected()
+        if entry is None:
+            return
+        url = entry.issue_url
+        if not url:
+            self.query_one(GWTStatusBar).update_status("No issue URL for this worktree")
+            return
+        import webbrowser
+        webbrowser.open(url)
+        self.query_one(GWTStatusBar).update_status(f"Opened: {url}")
+
     async def action_refresh(self) -> None:
-        """Refresh the repo and worktree lists."""
+        """Refresh repos, reconcile metadata, and restore selection."""
         status = self.query_one(GWTStatusBar)
         status.update_status("Refreshing...")
+
+        previous_repo = self._selected_repo
+
         self._repos = await self._discovery.discover_repos()
-        self.query_one(RepoPanel).set_repos(self._repos)
+        for repo in self._repos:
+            try:
+                worktrees = await git.list_worktrees(repo.path)
+                self._metadata.reconcile(worktrees, repo_name=repo.name)
+            except Exception:
+                pass
+
+        repo_panel = self.query_one(RepoPanel)
+        repo_panel.set_repos(self._repos)
+
+        if previous_repo:
+            repo_panel.select_by_name(previous_repo.name)
+
         status.update_status(f"Ready | {len(self._repos)} repos")
 
     async def action_yank(self) -> None:
@@ -256,7 +459,7 @@ class GWTApp(App):
     async def action_help(self) -> None:
         """Show keyboard shortcut help."""
         self.notify(
-            "Keys: c=Create d=Delete o=Open r=Refresh y=Copy m=Move s=Switch q=Quit Tab=Next Panel",
+            "^N=New ^D=Delete ^O=Open ^R=Refresh ^Y=Copy ^M=Move ^S=Switch ^U=URL ^Q=Quit Tab=Panel",
             title="Keyboard Shortcuts",
             timeout=5,
         )

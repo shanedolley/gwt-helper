@@ -8,6 +8,8 @@ import re
 import shutil
 import uuid
 
+import asyncio
+
 from gwt_worktree_manager.config.manager import Config
 from gwt_worktree_manager.store.metadata import MetadataStore, WorktreeEntry, _ISSUE_ID_RE
 from gwt_worktree_manager.services.discovery import RepoDiscovery
@@ -65,7 +67,7 @@ class OpenResult:
 # Helper functions
 # ==============================================================================
 
-VALID_WORK_TYPES = {"feature", "bug", "chore", "doc", "refactor", "hotfix"}
+VALID_WORK_TYPES = {"feature", "bug", "chore", "doc", "refactor", "hotfix", "task", "pr-review"}
 
 
 def to_kebab_case(text: str) -> str:
@@ -145,6 +147,8 @@ class WorktreeService:
         issue_id: str,
         description: str,
         source_branch: str | None = None,
+        issue_tracker: str = "",
+        issue_url: str = "",
     ) -> WorktreeEntry:
         """Create a new worktree with a new branch."""
         # 1. Validate inputs
@@ -208,6 +212,8 @@ class WorktreeService:
             branch=branch_name,
             path=str(worktree_path),
             issue_id=issue_id,
+            issue_tracker=issue_tracker,
+            issue_url=issue_url,
             work_type=work_type,
             source_branch=source_branch,
             created_at=now,
@@ -216,6 +222,91 @@ class WorktreeService:
         )
         self._metadata.create(entry)
         return entry
+
+    async def create_pr_review_worktree(
+        self,
+        repo_name: str,
+        pr_number: str,
+    ) -> WorktreeEntry:
+        """Create a worktree for reviewing a pull request."""
+        repo_path = await self._resolve_repo(repo_name)
+
+        # Resolve PR branch name via gh CLI
+        branch_name = await self._resolve_pr_branch(repo_path, pr_number)
+
+        # Fetch the branch from origin
+        await git.fetch_branch(repo_path, branch_name)
+
+        # Build worktree path: worktrees_dir/repo_name/pr-review/PR#
+        worktrees_dir = self._config.resolve_worktrees_dir()
+        worktree_path = worktrees_dir / repo_name / "pr-review" / pr_number
+        try:
+            worktree_path.resolve().relative_to(worktrees_dir.resolve())
+        except ValueError:
+            raise InvalidInputError(
+                "Worktree path would escape the configured worktrees directory"
+            )
+
+        # Create worktree using existing branch (no -b flag)
+        try:
+            await git.create_worktree_existing_branch(
+                repo_path, branch_name, worktree_path
+            )
+        except (git.GitError, KeyboardInterrupt):
+            await git.prune_worktrees(repo_path)
+            if worktree_path.exists():
+                shutil.rmtree(worktree_path, ignore_errors=True)
+            raise
+
+        # Create metadata entry
+        now = datetime.now(timezone.utc).isoformat()
+        entry = WorktreeEntry(
+            id=str(uuid.uuid4()),
+            repo_name=repo_name,
+            branch=branch_name,
+            path=str(worktree_path),
+            issue_id=pr_number,
+            issue_tracker="",
+            issue_url="",
+            work_type="pr-review",
+            source_branch="",
+            created_at=now,
+            last_accessed=now,
+            tags=[],
+        )
+        self._metadata.create(entry)
+        return entry
+
+    async def _resolve_pr_branch(self, repo_path: Path, pr_number: str) -> str:
+        """Resolve a PR number to its source branch name using gh CLI."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "gh", "pr", "view", pr_number,
+                "--json", "headRefName",
+                "-q", ".headRefName",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=repo_path,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+            if proc.returncode != 0:
+                raise InvalidInputError(
+                    f"Failed to resolve PR #{pr_number}: {stderr.decode().strip()}"
+                )
+            branch = stdout.decode().strip()
+            if not branch:
+                raise InvalidInputError(
+                    f"PR #{pr_number} has no branch name"
+                )
+            return branch
+        except FileNotFoundError:
+            raise InvalidInputError(
+                "gh CLI not found. Install it: https://cli.github.com"
+            )
+        except asyncio.TimeoutError:
+            raise InvalidInputError(
+                f"Timed out resolving PR #{pr_number}"
+            )
 
     async def delete_worktree(
         self, worktree_id: str, delete_branch: bool = False, force: bool = False

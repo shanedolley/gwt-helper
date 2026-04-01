@@ -11,6 +11,7 @@ class DiscoveredRepo:
 
     name: str
     path: Path
+    org: str = ""
 
 
 class RepoDiscovery:
@@ -51,10 +52,14 @@ class RepoDiscovery:
         directory: Path,
         depth: int,
         repos: list[DiscoveredRepo],
+        scan_root: Path | None = None,
     ) -> None:
         """Recursively scan a directory for Git repos."""
         if depth > self._scan_depth:
             return
+
+        if scan_root is None:
+            scan_root = directory
 
         try:
             entries = sorted(directory.iterdir())
@@ -81,11 +86,17 @@ class RepoDiscovery:
             git_dir = entry / ".git"
             if git_dir.exists():
                 if git_dir.is_dir():
+                    try:
+                        rel = entry.resolve().parent.relative_to(scan_root.resolve())
+                        org = str(rel) if str(rel) != "." else ""
+                    except ValueError:
+                        org = ""
                     repos.append(DiscoveredRepo(
                         name=entry.name,
                         path=entry.resolve(),
+                        org=org,
                     ))
                 continue
 
             if depth < self._scan_depth:
-                self._scan_directory(entry, depth + 1, repos)
+                self._scan_directory(entry, depth + 1, repos, scan_root)

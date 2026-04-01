@@ -12,6 +12,7 @@ class RepoConfig:
     open_command: str = "cd"
     hook_timeout: int = 300
     hook_env: list[str] = field(default_factory=list)
+    issue_url_template: str = ""
 
 
 @dataclass
@@ -33,6 +34,13 @@ class Config:
     scan_depth: int = 3
     worktrees_dir: str = "~/Development/worktrees"
     default_source_branch: str = "development"
+    default_issue_tracker: str = "ado"
+    default_issue_url_templates: dict[str, str] = field(
+        default_factory=lambda: {
+            "ado": "https://dev.azure.com/DolcheVentures/Talentblocks%20Marketplace/_workitems/edit/{issue_id}",
+            "linear": "",
+        }
+    )
     cache_ttl: int = 300
     linear: IntegrationConfig = field(default_factory=IntegrationConfig)
     ado: IntegrationConfig = field(default_factory=IntegrationConfig)
@@ -49,6 +57,14 @@ class Config:
     def resolve_scan_paths(self) -> list[Path]:
         """Resolve ~ in scan_paths to actual paths."""
         return [Path(p).expanduser() for p in self.scan_paths]
+
+    def get_issue_url(self, repo_name: str, tracker: str, issue_id: str) -> str:
+        """Build issue URL from per-repo or global template."""
+        repo_cfg = self.get_repo_config(repo_name)
+        template = repo_cfg.issue_url_template or self.default_issue_url_templates.get(tracker, "")
+        if not template:
+            return ""
+        return template.replace("{issue_id}", issue_id)
 
 
 class ConfigError(Exception):
@@ -82,11 +98,17 @@ def _parse_config(data: dict) -> Config:
     """Parse raw TOML dict into Config dataclass."""
     general = data.get("general", {})
 
+    defaults = Config()
     config = Config(
         scan_paths=general.get("scan_paths", ["~/Development"]),
         scan_depth=general.get("scan_depth", 3),
         worktrees_dir=general.get("worktrees_dir", "~/Development/worktrees"),
         default_source_branch=general.get("default_source_branch", "development"),
+        default_issue_tracker=general.get("default_issue_tracker", "ado"),
+        default_issue_url_templates={
+            **defaults.default_issue_url_templates,
+            **general.get("default_issue_url_templates", {}),
+        },
         cache_ttl=general.get("cache_ttl", 300),
     )
 
@@ -115,6 +137,7 @@ def _parse_config(data: dict) -> Config:
             open_command=repo_data.get("open_command", "cd"),
             hook_timeout=repo_data.get("hook_timeout", 300),
             hook_env=repo_data.get("hook_env", []),
+            issue_url_template=repo_data.get("issue_url_template", ""),
         )
 
     if config.scan_depth < 1:
