@@ -19,12 +19,22 @@ from gwt_worktree_manager.git import operations as git
 from gwt_worktree_manager.services.discovery import RepoDiscovery
 from gwt_worktree_manager.services.hooks import HookRunner
 from gwt_worktree_manager.services.terminal import TerminalOpener
-from gwt_worktree_manager.services.worktree import WorktreeService, UncommittedChangesError
+from gwt_worktree_manager.services.worktree import (
+    BulkDeleteResult,
+    UncommittedChangesError,
+    WorktreeService,
+)
 from gwt_worktree_manager.state.selection_cache import SelectionCache
 from gwt_worktree_manager.store.metadata import MetadataStore, WorktreeEntry
 from gwt_worktree_manager.store.ui_state import UIStateStore
 from gwt_worktree_manager.widgets.detail_panel import DetailPanel
-from gwt_worktree_manager.widgets.dialogs import CreateDialog, DeleteDialog, ForceDeleteDialog
+from gwt_worktree_manager.widgets.dialogs import (
+    BulkDeleteDialog,
+    BulkForceDeleteDialog,
+    CreateDialog,
+    DeleteDialog,
+    ForceDeleteDialog,
+)
 from gwt_worktree_manager.widgets.repo_panel import RepoPanel
 from gwt_worktree_manager.widgets.splitter import SplitterBar
 from gwt_worktree_manager.widgets.status_bar import GWTStatusBar
@@ -262,7 +272,11 @@ class GWTApp(App):
 
     @work
     async def action_delete_worktree(self) -> None:
-        """Delete the selected worktree after confirmation."""
+        """Delete the selected worktree, or the full mark set when non-empty."""
+        if self._selection_cache.count > 0:
+            await self._run_bulk_delete()
+            return
+
         worktree_panel = self.query_one(WorktreePanel)
         entry = worktree_panel.get_selected()
         if entry is None:
@@ -297,16 +311,57 @@ class GWTApp(App):
             return
 
         status.update_status(f"Deleted: {entry.branch}")
-        if self._selected_repo:
-            try:
-                worktrees = await git.list_worktrees(self._selected_repo.path)
-                self._metadata.reconcile(worktrees, repo_name=self._selected_repo.name)
-            except Exception:
-                pass
-            entries = await self._service.list_worktrees(
-                repo_name=self._selected_repo.name
-            )
-            worktree_panel.set_worktrees(entries)
+        await self._refresh_current_repo_worktrees()
+
+    async def _run_bulk_delete(self) -> None:
+        """Run the bulk-delete flow when the selection cache is non-empty."""
+        status = self.query_one(GWTStatusBar)
+        entries = self._selection_cache.resolved_entries()
+
+        result = await self.push_screen_wait(BulkDeleteDialog(entries))
+        if result is None:
+            return
+
+        working: list = result["entries"]
+        delete_branch: bool = result["delete_branch"]
+
+        first = await self._service.delete_worktrees_bulk(
+            working, delete_branch=delete_branch, force=False
+        )
+        self._selection_cache.clear_succeeded(first.succeeded)
+
+        force_result = BulkDeleteResult(succeeded=[], dirty=[], failed=[])
+        dirty_skipped = 0
+        if first.dirty:
+            force = await self.push_screen_wait(BulkForceDeleteDialog(first.dirty))
+            if force:
+                force_result = await self._service.delete_worktrees_bulk(
+                    first.dirty, delete_branch=delete_branch, force=True
+                )
+                self._selection_cache.clear_succeeded(force_result.succeeded)
+            else:
+                dirty_skipped = len(first.dirty)
+
+        succeeded = len(first.succeeded) + len(force_result.succeeded)
+        failed = len(first.failed) + len(force_result.failed)
+        status.update_status(
+            f"Deleted {succeeded}, failed {failed}, dirty-skipped {dirty_skipped}"
+        )
+        await self._refresh_current_repo_worktrees()
+
+    async def _refresh_current_repo_worktrees(self) -> None:
+        if not self._selected_repo:
+            return
+        try:
+            worktrees = await git.list_worktrees(self._selected_repo.path)
+            self._metadata.reconcile(worktrees, repo_name=self._selected_repo.name)
+        except Exception:
+            pass
+        entries = await self._service.list_worktrees(
+            repo_name=self._selected_repo.name
+        )
+        worktree_panel = self.query_one(WorktreePanel)
+        worktree_panel.set_worktrees(entries)
 
     @work
     async def action_open_worktree(self) -> None:

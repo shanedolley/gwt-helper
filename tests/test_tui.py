@@ -5,7 +5,12 @@ import pytest
 from gwt_worktree_manager.app import GWTApp
 from gwt_worktree_manager.store.metadata import WorktreeEntry
 from gwt_worktree_manager.widgets.detail_panel import DetailPanel
-from gwt_worktree_manager.widgets.dialogs import CreateDialog, DeleteDialog
+from gwt_worktree_manager.widgets.dialogs import (
+    BulkDeleteDialog,
+    BulkForceDeleteDialog,
+    CreateDialog,
+    DeleteDialog,
+)
 from gwt_worktree_manager.widgets.repo_panel import RepoPanel
 from gwt_worktree_manager.widgets.status_bar import GWTStatusBar
 from gwt_worktree_manager.widgets.worktree_panel import WorktreePanel
@@ -450,3 +455,210 @@ class TestCreateDialog:
         entry = _make_entry()
         dialog = DeleteDialog(entry)
         assert dialog is not None
+
+
+class TestDispatchFork:
+    @pytest.mark.asyncio
+    async def test_empty_cache_opens_single_delete_dialog(self):
+        """ctrl+d with no marks pushes DeleteDialog, not BulkDeleteDialog."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            wt_panel = app.query_one(WorktreePanel)
+            wt_panel.set_worktrees([_make_entry(id="a", branch="feature/a")])
+            await pilot.pause()
+            wt_panel._table.focus()
+            await pilot.pause()
+            assert app._selection_cache.count == 0
+
+            screens = []
+            orig = app.push_screen_wait
+
+            async def _capture(screen, *args, **kwargs):
+                screens.append(screen)
+                return None
+
+            app.push_screen_wait = _capture
+            try:
+                app.action_delete_worktree()
+                for _ in range(10):
+                    await pilot.pause()
+                    if screens:
+                        break
+            finally:
+                app.push_screen_wait = orig
+
+            assert len(screens) == 1
+            assert isinstance(screens[0], DeleteDialog)
+            assert not isinstance(screens[0], BulkDeleteDialog)
+
+    @pytest.mark.asyncio
+    async def test_non_empty_cache_opens_bulk_delete_dialog(self):
+        """ctrl+d with marks pushes BulkDeleteDialog with pre-resolved entries."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            wt_panel = app.query_one(WorktreePanel)
+            entries = [
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ]
+            wt_panel.set_worktrees(entries)
+            await pilot.pause()
+            app._selection_cache.toggle(entries[0])
+            app._selection_cache.toggle(entries[1])
+            assert app._selection_cache.count == 2
+
+            screens = []
+            orig = app.push_screen_wait
+
+            async def _capture(screen, *args, **kwargs):
+                screens.append(screen)
+                return None  # cancel the dialog
+
+            app.push_screen_wait = _capture
+            try:
+                app.action_delete_worktree()
+                for _ in range(10):
+                    await pilot.pause()
+                    if screens:
+                        break
+            finally:
+                app.push_screen_wait = orig
+
+            assert len(screens) == 1
+            assert isinstance(screens[0], BulkDeleteDialog)
+            assert [e.id for e in screens[0]._working] == ["a", "b"]
+
+    @pytest.mark.asyncio
+    async def test_bulk_confirm_invokes_service_and_clears_succeeded(self, monkeypatch):
+        """Confirming the bulk dialog calls delete_worktrees_bulk and clears the cache."""
+        from gwt_worktree_manager.services.worktree import BulkDeleteResult
+
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            wt_panel = app.query_one(WorktreePanel)
+            entries = [
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ]
+            wt_panel.set_worktrees(entries)
+            await pilot.pause()
+            app._selection_cache.toggle(entries[0])
+            app._selection_cache.toggle(entries[1])
+
+            calls: list[dict] = []
+
+            async def _fake_bulk(entries, *, delete_branch, force=False):
+                calls.append(
+                    {
+                        "ids": [e.id for e in entries],
+                        "delete_branch": delete_branch,
+                        "force": force,
+                    }
+                )
+                return BulkDeleteResult(
+                    succeeded=[e.id for e in entries], dirty=[], failed=[]
+                )
+
+            app._service.delete_worktrees_bulk = _fake_bulk
+
+            async def _fake_push(screen, *args, **kwargs):
+                if isinstance(screen, BulkDeleteDialog):
+                    return {"entries": list(screen._working), "delete_branch": True}
+                return None
+
+            app.push_screen_wait = _fake_push
+
+            app.action_delete_worktree()
+            for _ in range(20):
+                await pilot.pause()
+                if calls and app._selection_cache.count == 0:
+                    break
+
+            assert len(calls) == 1
+            assert sorted(calls[0]["ids"]) == ["a", "b"]
+            assert calls[0]["delete_branch"] is True
+            assert calls[0]["force"] is False
+            assert app._selection_cache.count == 0
+
+    @pytest.mark.asyncio
+    async def test_bulk_dirty_triggers_force_dialog_and_force_all(self, monkeypatch):
+        """Dirty items surface a BulkForceDeleteDialog; Force All runs the second pass."""
+        from gwt_worktree_manager.services.worktree import BulkDeleteResult
+
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            wt_panel = app.query_one(WorktreePanel)
+            a = _make_entry(id="a", branch="feature/a")
+            b = _make_entry(id="b", branch="feature/b")
+            wt_panel.set_worktrees([a, b])
+            await pilot.pause()
+            app._selection_cache.toggle(a)
+            app._selection_cache.toggle(b)
+
+            bulk_calls: list[tuple[list[str], bool]] = []
+
+            async def _fake_bulk(entries, *, delete_branch, force=False):
+                bulk_calls.append(([e.id for e in entries], force))
+                if not force:
+                    return BulkDeleteResult(succeeded=["a"], dirty=[b], failed=[])
+                return BulkDeleteResult(succeeded=["b"], dirty=[], failed=[])
+
+            app._service.delete_worktrees_bulk = _fake_bulk
+
+            async def _fake_push(screen, *args, **kwargs):
+                if isinstance(screen, BulkDeleteDialog):
+                    return {"entries": list(screen._working), "delete_branch": False}
+                if isinstance(screen, BulkForceDeleteDialog):
+                    return True  # Force All
+                return None
+
+            app.push_screen_wait = _fake_push
+
+            app.action_delete_worktree()
+            for _ in range(30):
+                await pilot.pause()
+                if len(bulk_calls) == 2:
+                    break
+
+            assert len(bulk_calls) == 2
+            assert bulk_calls[0] == (["a", "b"], False)
+            assert bulk_calls[1] == (["b"], True)
+            assert app._selection_cache.count == 0
+
+    @pytest.mark.asyncio
+    async def test_bulk_dirty_skip_retains_dirty_items(self):
+        """Skipping the force dialog leaves dirty items in the cache."""
+        from gwt_worktree_manager.services.worktree import BulkDeleteResult
+
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            wt_panel = app.query_one(WorktreePanel)
+            a = _make_entry(id="a", branch="feature/a")
+            b = _make_entry(id="b", branch="feature/b")
+            wt_panel.set_worktrees([a, b])
+            await pilot.pause()
+            app._selection_cache.toggle(a)
+            app._selection_cache.toggle(b)
+
+            async def _fake_bulk(entries, *, delete_branch, force=False):
+                return BulkDeleteResult(succeeded=["a"], dirty=[b], failed=[])
+
+            app._service.delete_worktrees_bulk = _fake_bulk
+
+            async def _fake_push(screen, *args, **kwargs):
+                if isinstance(screen, BulkDeleteDialog):
+                    return {"entries": list(screen._working), "delete_branch": False}
+                if isinstance(screen, BulkForceDeleteDialog):
+                    return False  # Skip
+                return None
+
+            app.push_screen_wait = _fake_push
+
+            app.action_delete_worktree()
+            for _ in range(20):
+                await pilot.pause()
+                if not app._selection_cache.contains("a"):
+                    break
+
+            assert app._selection_cache.contains("a") is False
+            assert app._selection_cache.contains("b") is True
