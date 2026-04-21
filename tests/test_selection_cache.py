@@ -76,11 +76,51 @@ class TestSelectionCache:
         cache.clear_succeeded(["b"])
         assert observed == [1, 2, 1, 0]
 
-    def test_multiple_observers(self):
+    def test_on_change_replaces_previous_callback(self):
         cache = SelectionCache()
         a, b = [], []
         cache.on_change(a.append)
         cache.on_change(b.append)
         cache.toggle(_entry("x"))
-        assert a == [1]
+        assert a == []
         assert b == [1]
+
+    def test_on_change_can_be_cleared(self):
+        cache = SelectionCache()
+        observed = []
+        cache.on_change(observed.append)
+        cache.on_change(None)
+        cache.toggle(_entry("x"))
+        assert observed == []
+
+    def test_observer_exception_does_not_crash_toggle(self):
+        cache = SelectionCache()
+
+        def bad_observer(_n: int) -> None:
+            raise RuntimeError("boom")
+
+        cache.on_change(bad_observer)
+        # Must not raise.
+        cache.toggle(_entry("x"))
+        assert cache.count == 1
+
+    def test_prune_for_repo_removes_missing_ids_only_in_that_repo(self):
+        cache = SelectionCache()
+        cache.toggle(_entry("keep-a", repo="alpha"))
+        cache.toggle(_entry("gone-a", repo="alpha"))
+        cache.toggle(_entry("keep-b", repo="beta"))
+        cache.prune_for_repo("alpha", ["keep-a"])
+        assert cache.contains("keep-a") is True
+        assert cache.contains("gone-a") is False
+        assert cache.contains("keep-b") is True  # untouched across repos
+
+    def test_prune_for_repo_fires_on_change_only_when_removes(self):
+        cache = SelectionCache()
+        counts: list[int] = []
+        cache.on_change(counts.append)
+        cache.toggle(_entry("a", repo="alpha"))
+        counts.clear()
+        cache.prune_for_repo("alpha", ["a"])  # no-op
+        assert counts == []
+        cache.prune_for_repo("alpha", [])  # removes "a"
+        assert counts == [0]

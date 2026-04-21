@@ -1,5 +1,6 @@
 """Worktree panel widget for the GWT Worktree Manager TUI."""
 
+from rich.text import Text
 from textual.widgets import Static, DataTable, Label, Input
 from textual.message import Message
 
@@ -13,6 +14,8 @@ MARKER_OFF = " "
 
 class WorktreePanel(Static):
     """Main panel showing worktrees for the selected repo."""
+
+    MARKED_STYLE = "bold $accent"
 
     class WorktreeSelected(Message):
         """Message posted when a worktree entry is selected."""
@@ -177,12 +180,14 @@ class WorktreePanel(Static):
         self._table.display = True
 
         for entry in filtered:
-            marker = MARKER_ON if self._cache.contains(entry.id) else MARKER_OFF
+            marked = self._cache.contains(entry.id)
+            style = "bold" if marked else ""
+            marker = MARKER_ON if marked else MARKER_OFF
             self._table.add_row(
-                marker,
-                entry.branch,
-                entry.issue_id or "-",
-                entry.work_type or "-",
+                Text(marker, style=style),
+                Text(entry.branch, style=style),
+                Text(entry.issue_id or "-", style=style),
+                Text(entry.work_type or "-", style=style),
                 key=entry.id,
             )
 

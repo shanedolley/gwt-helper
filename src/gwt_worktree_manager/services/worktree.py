@@ -366,10 +366,20 @@ class WorktreeService:
         Returns a BulkDeleteResult partitioning outcomes into succeeded
         (including worktrees that were already gone), dirty (raised
         UncommittedChangesError), and failed (all other exceptions).
-        The input list is not mutated.
+
+        The bare ``except Exception`` below is intentional: it ensures
+        per-entry errors are collected into ``result.failed`` rather than
+        aborting the batch. BaseException subclasses such as
+        KeyboardInterrupt, SystemExit, and asyncio.CancelledError still
+        propagate, so task cancellation remains responsive.
         """
         result = BulkDeleteResult(succeeded=[], dirty=[], failed=[])
-        for entry in list(entries):
+        for entry in entries:
+            if not entry.id:
+                result.failed.append(
+                    (entry.id or "<no-id>", ValueError("entry missing id"))
+                )
+                continue
             try:
                 await self.delete_worktree(
                     entry.id, delete_branch=delete_branch, force=force
@@ -379,7 +389,7 @@ class WorktreeService:
                 result.succeeded.append(entry.id)
             except UncommittedChangesError:
                 result.dirty.append(entry)
-            except Exception as exc:  # noqa: BLE001 — intentional catch-all
+            except Exception as exc:  # noqa: BLE001 — see docstring
                 result.failed.append((entry.id, exc))
         return result
 

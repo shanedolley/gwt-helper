@@ -116,3 +116,14 @@ class TestDeleteWorktreesBulk:
             [_entry("a")], delete_branch=False
         )
         assert isinstance(result, BulkDeleteResult)
+
+    @pytest.mark.asyncio
+    async def test_entry_with_blank_id_goes_to_failed(self):
+        service = _FakeService({"a": "success"})
+        bad = WorktreeEntry(id="", repo_name="x", branch="y", path="/tmp/y")
+        result = await service.delete_worktrees_bulk(
+            [bad, _entry("a")], delete_branch=False
+        )
+        assert result.succeeded == ["a"]
+        assert len(result.failed) == 1
+        assert isinstance(result.failed[0][1], ValueError)

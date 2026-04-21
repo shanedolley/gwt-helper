@@ -270,9 +270,14 @@ class GWTApp(App):
             except Exception as e:
                 status.update_status(f"Error: {e}")
 
-    @work
+    @work(exclusive=True)
     async def action_delete_worktree(self) -> None:
-        """Delete the selected worktree, or the full mark set when non-empty."""
+        """Delete the selected worktree, or the full mark set when non-empty.
+
+        Decorated ``exclusive=True`` so a second ctrl+d press while a delete
+        flow is already in progress cancels the first rather than running
+        two delete flows concurrently against the same cache.
+        """
         if self._selection_cache.count > 0:
             await self._run_bulk_delete()
             return
@@ -317,6 +322,10 @@ class GWTApp(App):
         """Run the bulk-delete flow when the selection cache is non-empty."""
         status = self.query_one(GWTStatusBar)
         entries = self._selection_cache.resolved_entries()
+        # Snapshot the IDs we're about to process so that concurrent
+        # space-toggles for NEW worktrees during the run don't get wiped
+        # by our end-of-run clear_succeeded call.
+        snapshot_ids = {e.id for e in entries}
 
         result = await self.push_screen_wait(BulkDeleteDialog(entries))
         if result is None:
@@ -328,7 +337,6 @@ class GWTApp(App):
         first = await self._service.delete_worktrees_bulk(
             working, delete_branch=delete_branch, force=False
         )
-        self._selection_cache.clear_succeeded(first.succeeded)
 
         force_result = BulkDeleteResult(succeeded=[], dirty=[], failed=[])
         dirty_skipped = 0
@@ -338,9 +346,17 @@ class GWTApp(App):
                 force_result = await self._service.delete_worktrees_bulk(
                     first.dirty, delete_branch=delete_branch, force=True
                 )
-                self._selection_cache.clear_succeeded(force_result.succeeded)
             else:
                 dirty_skipped = len(first.dirty)
+
+        # Only clear IDs that were in our original snapshot, so any marks
+        # added for new worktrees during the run survive.
+        to_clear = [
+            wid
+            for wid in (*first.succeeded, *force_result.succeeded)
+            if wid in snapshot_ids
+        ]
+        self._selection_cache.clear_succeeded(to_clear)
 
         succeeded = len(first.succeeded) + len(force_result.succeeded)
         failed = len(first.failed) + len(force_result.failed)
@@ -359,6 +375,11 @@ class GWTApp(App):
             pass
         entries = await self._service.list_worktrees(
             repo_name=self._selected_repo.name
+        )
+        # Drop cache entries for worktrees that no longer exist in this repo
+        # (e.g., deleted out-of-band), so the status bar count stays accurate.
+        self._selection_cache.prune_for_repo(
+            self._selected_repo.name, [e.id for e in entries]
         )
         worktree_panel = self.query_one(WorktreePanel)
         worktree_panel.set_worktrees(entries)

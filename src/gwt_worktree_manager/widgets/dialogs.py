@@ -500,18 +500,22 @@ class BulkDeleteDialog(ModalScreen):
         if not self._working:
             return
         row = table.cursor_row
-        if 0 <= row < len(self._working):
-            del self._working[row]
-            self._refresh_view()
-            if self._working:
-                table.move_cursor(row=min(row, len(self._working) - 1))
+        try:
+            row_key, _ = table.coordinate_to_cell_key((row, 0))
+        except Exception:
+            return
+        target_id = str(row_key.value) if row_key is not None else None
+        if target_id is None:
+            return
+        self._working = [e for e in self._working if e.id != target_id]
+        self._refresh_view()
+        if self._working:
+            table.move_cursor(row=min(row, len(self._working) - 1))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-bulk-cancel":
             self.dismiss(None)
         elif event.button.id == "btn-bulk-confirm":
-            if not self._working:
-                return
             delete_branch = self.query_one("#bulk-delete-branch", Checkbox).value
             self.dismiss(
                 {"entries": list(self._working), "delete_branch": delete_branch}

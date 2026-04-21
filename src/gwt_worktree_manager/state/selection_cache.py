@@ -1,13 +1,13 @@
 """In-memory selection cache for multi-worktree operations.
 
-Holds a session-scoped set of marked worktree IDs plus a resolver map from
-ID to ``WorktreeEntry`` so downstream dialogs can render entries without
-re-querying the service.
+Holds a session-scoped dict of marked worktree entries keyed by ID so
+downstream dialogs can render entries without re-querying the service.
 """
 
 from __future__ import annotations
 
-from typing import Callable
+import warnings
+from typing import Callable, Iterable
 
 from gwt_worktree_manager.store.metadata import WorktreeEntry
 
@@ -19,33 +19,30 @@ class SelectionCache:
     """Session-lifetime cache of marked worktrees."""
 
     def __init__(self) -> None:
-        self._ids: set[str] = set()
         self._entries: dict[str, WorktreeEntry] = {}
-        self._observers: list[ChangeCallback] = []
+        self._on_change: ChangeCallback | None = None
 
     @property
     def count(self) -> int:
-        return len(self._ids)
+        return len(self._entries)
 
-    def on_change(self, callback: ChangeCallback) -> None:
-        """Register a callback invoked with the new count on every mutation."""
-        self._observers.append(callback)
+    def on_change(self, callback: ChangeCallback | None) -> None:
+        """Register a single callback invoked with the new count on mutation."""
+        self._on_change = callback
 
     def toggle(self, entry: WorktreeEntry) -> bool:
         """Flip membership for ``entry``. Returns True if now marked."""
-        if entry.id in self._ids:
-            self._ids.discard(entry.id)
-            self._entries.pop(entry.id, None)
+        if entry.id in self._entries:
+            del self._entries[entry.id]
             now_marked = False
         else:
-            self._ids.add(entry.id)
             self._entries[entry.id] = entry
             now_marked = True
         self._notify()
         return now_marked
 
     def contains(self, worktree_id: str) -> bool:
-        return worktree_id in self._ids
+        return worktree_id in self._entries
 
     def resolved_entries(self) -> list[WorktreeEntry]:
         """Return marked entries sorted by (repo_name, branch) as a new list."""
@@ -54,17 +51,37 @@ class SelectionCache:
             key=lambda e: (e.repo_name, e.branch),
         )
 
-    def clear_succeeded(self, ids: list[str]) -> None:
+    def clear_succeeded(self, ids: Iterable[str]) -> None:
         """Remove the given IDs from the cache. Unknown IDs are ignored."""
         mutated = False
         for wid in ids:
-            if wid in self._ids:
-                self._ids.discard(wid)
-                self._entries.pop(wid, None)
+            if wid in self._entries:
+                del self._entries[wid]
                 mutated = True
         if mutated:
             self._notify()
 
+    def prune_for_repo(self, repo_name: str, valid_ids: Iterable[str]) -> None:
+        """Drop cached entries for ``repo_name`` whose IDs are not in ``valid_ids``.
+
+        Used after a repo's worktree list is refreshed to purge marks for
+        worktrees that were deleted out-of-band.
+        """
+        valid = set(valid_ids)
+        to_drop = [
+            wid
+            for wid, entry in self._entries.items()
+            if entry.repo_name == repo_name and wid not in valid
+        ]
+        if to_drop:
+            for wid in to_drop:
+                del self._entries[wid]
+            self._notify()
+
     def _notify(self) -> None:
-        for obs in self._observers:
-            obs(self.count)
+        if self._on_change is None:
+            return
+        try:
+            self._on_change(self.count)
+        except Exception as exc:  # noqa: BLE001 — observer must not crash the cache
+            warnings.warn(f"SelectionCache observer raised: {exc!r}")
