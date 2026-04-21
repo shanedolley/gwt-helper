@@ -3,7 +3,12 @@
 from textual.widgets import Static, DataTable, Label, Input
 from textual.message import Message
 
+from gwt_worktree_manager.state.selection_cache import SelectionCache
 from gwt_worktree_manager.store.metadata import WorktreeEntry
+
+
+MARKER_ON = "●"
+MARKER_OFF = " "
 
 
 class WorktreePanel(Static):
@@ -16,7 +21,7 @@ class WorktreePanel(Static):
             self.entry = entry
             super().__init__()
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, selection_cache: SelectionCache | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._entries: list[WorktreeEntry] = []
         self._table: DataTable | None = None
@@ -25,6 +30,7 @@ class WorktreePanel(Static):
         self._filter_text: str = ""
         self._filtering: bool = False
         self._filtered_entries: list[WorktreeEntry] = []
+        self._cache = selection_cache or SelectionCache()
 
     def compose(self):
         """Compose the worktree panel."""
@@ -38,7 +44,7 @@ class WorktreePanel(Static):
         self._empty_label = Label("No worktrees. Press [c] to create one.")
         yield self._empty_label
         self._table = DataTable(cursor_type="row")
-        self._table.add_columns("Branch", "Issue", "Type")
+        self._table.add_columns(" ", "Branch", "Issue", "Type")
         self._table.display = False
         yield self._table
 
@@ -57,6 +63,28 @@ class WorktreePanel(Static):
             else:
                 self._table.action_cursor_down()
             event.prevent_default()
+            return
+
+        # Toggle mark with space when the table has focus
+        if (
+            event.key == "space"
+            and self._table is not None
+            and self._table.has_focus
+            and not self._filtering
+        ):
+            entry = self.get_selected()
+            if entry is None:
+                event.prevent_default()
+                return
+            self._cache.toggle(entry)
+            event.prevent_default()
+            cursor_row = self._table.cursor_row
+            self._rebuild_table()
+            entries = self._filtered_entries or self._entries
+            if cursor_row < len(entries) - 1:
+                self._table.move_cursor(row=cursor_row + 1)
+            else:
+                self._table.move_cursor(row=cursor_row)
             return
 
         # Start filtering when typing on the table
@@ -149,7 +177,9 @@ class WorktreePanel(Static):
         self._table.display = True
 
         for entry in filtered:
+            marker = MARKER_ON if self._cache.contains(entry.id) else MARKER_OFF
             self._table.add_row(
+                marker,
                 entry.branch,
                 entry.issue_id or "-",
                 entry.work_type or "-",

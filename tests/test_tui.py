@@ -193,6 +193,104 @@ class TestWorktreePanel:
             assert wt_panel._entries[1].id == "old"
 
 
+class TestWorktreePanelMarking:
+    @pytest.mark.asyncio
+    async def test_space_marks_current_row(self):
+        """Pressing space toggles the mark on the highlighted row."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            entries = [
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ]
+            wt_panel.set_worktrees(entries)
+            await pilot.pause()
+            wt_panel._table.focus()
+            await pilot.pause()
+            await pilot.press("space")
+            cache = pilot.app._selection_cache
+            assert cache.contains("a") is True
+            assert cache.count == 1
+
+    @pytest.mark.asyncio
+    async def test_space_advances_cursor(self):
+        """After toggling, the cursor moves to the next row."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            entries = [
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ]
+            wt_panel.set_worktrees(entries)
+            await pilot.pause()
+            wt_panel._table.focus()
+            await pilot.pause()
+            await pilot.press("space")
+            assert wt_panel._table.cursor_row == 1
+
+    @pytest.mark.asyncio
+    async def test_space_on_last_row_does_not_wrap(self):
+        """Cursor stays on last row when space is pressed there."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            entries = [_make_entry(id="only", branch="feature/only")]
+            wt_panel.set_worktrees(entries)
+            await pilot.pause()
+            wt_panel._table.focus()
+            await pilot.pause()
+            await pilot.press("space")
+            assert wt_panel._table.cursor_row == 0
+            assert pilot.app._selection_cache.contains("only") is True
+
+    @pytest.mark.asyncio
+    async def test_space_toggles_off(self):
+        """Pressing space on a marked row unmarks it."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            entries = [_make_entry(id="a", branch="feature/a")]
+            wt_panel.set_worktrees(entries)
+            await pilot.pause()
+            wt_panel._table.focus()
+            await pilot.pause()
+            await pilot.press("space")
+            wt_panel._table.move_cursor(row=0)
+            await pilot.pause()
+            await pilot.press("space")
+            assert pilot.app._selection_cache.contains("a") is False
+
+    @pytest.mark.asyncio
+    async def test_space_on_empty_table_is_noop(self):
+        """Space on an empty worktree panel does nothing."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            wt_panel.set_worktrees([])
+            await pilot.pause()
+            await pilot.press("space")
+            assert pilot.app._selection_cache.count == 0
+
+    @pytest.mark.asyncio
+    async def test_marks_survive_repo_switch_simulation(self):
+        """After set_worktrees is called again, marker re-applies for cached IDs."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            cache = pilot.app._selection_cache
+            e = _make_entry(id="persists", repo_name="alpha", branch="feature/persists")
+            cache.toggle(e)
+            wt_panel.set_worktrees([e])
+            await pilot.pause()
+            marker_cell = wt_panel._table.get_cell_at((0, 0))
+            assert str(marker_cell).strip() == "●"
+
+    @pytest.mark.asyncio
+    async def test_unmarked_row_shows_blank_marker(self):
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            wt_panel.set_worktrees([_make_entry(id="a", branch="feature/a")])
+            await pilot.pause()
+            marker_cell = wt_panel._table.get_cell_at((0, 0))
+            assert str(marker_cell).strip() == ""
+
+
 # ---------------------------------------------------------------------------
 # DetailPanel
 # ---------------------------------------------------------------------------

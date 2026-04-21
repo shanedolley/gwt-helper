@@ -20,6 +20,7 @@ from gwt_worktree_manager.services.discovery import RepoDiscovery
 from gwt_worktree_manager.services.hooks import HookRunner
 from gwt_worktree_manager.services.terminal import TerminalOpener
 from gwt_worktree_manager.services.worktree import WorktreeService, UncommittedChangesError
+from gwt_worktree_manager.state.selection_cache import SelectionCache
 from gwt_worktree_manager.store.metadata import MetadataStore, WorktreeEntry
 from gwt_worktree_manager.store.ui_state import UIStateStore
 from gwt_worktree_manager.widgets.detail_panel import DetailPanel
@@ -138,6 +139,7 @@ class GWTApp(App):
         )
         self._repos: list = []
         self._selected_repo = None
+        self._selection_cache = SelectionCache()
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
@@ -147,7 +149,10 @@ class GWTApp(App):
                 yield RepoPanel(id="repo-panel")
             yield SplitterBar(direction="horizontal", id="h-splitter")
             with Vertical(id="right-panel"):
-                yield WorktreePanel(id="worktree-panel")
+                yield WorktreePanel(
+                    selection_cache=self._selection_cache,
+                    id="worktree-panel",
+                )
                 yield DetailPanel(id="detail-panel")
         yield GWTStatusBar(id="status-bar")
         yield Footer()
