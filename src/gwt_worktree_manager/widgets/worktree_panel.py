@@ -112,8 +112,10 @@ class WorktreePanel(Static):
 
     def set_worktrees(self, entries: list[WorktreeEntry]) -> None:
         """Set the list of worktree entries to display."""
+        by_recency = sorted(entries, key=lambda e: e.last_accessed or "", reverse=True)
         self._entries = sorted(
-            entries, key=lambda e: (e.work_type or "", e.issue_id or "", e.branch or "")
+            by_recency,
+            key=lambda e: (e.work_type or "", e.issue_id or "", e.branch or ""),
         )
         self._rebuild_table()
 
