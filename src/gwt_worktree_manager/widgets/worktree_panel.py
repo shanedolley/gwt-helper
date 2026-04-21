@@ -12,10 +12,11 @@ MARKER_ON = "●"
 MARKER_OFF = " "
 
 
+MARKED_ROW_STYLE = "bold reverse"
+
+
 class WorktreePanel(Static):
     """Main panel showing worktrees for the selected repo."""
-
-    MARKED_STYLE = "bold $accent"
 
     class WorktreeSelected(Message):
         """Message posted when a worktree entry is selected."""
@@ -181,7 +182,7 @@ class WorktreePanel(Static):
 
         for entry in filtered:
             marked = self._cache.contains(entry.id)
-            style = "bold" if marked else ""
+            style = MARKED_ROW_STYLE if marked else ""
             marker = MARKER_ON if marked else MARKER_OFF
             self._table.add_row(
                 Text(marker, style=style),

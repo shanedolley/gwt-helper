@@ -150,6 +150,7 @@ class GWTApp(App):
         self._repos: list = []
         self._selected_repo = None
         self._selection_cache = SelectionCache()
+        self._delete_in_progress = False
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
@@ -270,14 +271,24 @@ class GWTApp(App):
             except Exception as e:
                 status.update_status(f"Error: {e}")
 
-    @work(exclusive=True)
+    @work
     async def action_delete_worktree(self) -> None:
         """Delete the selected worktree, or the full mark set when non-empty.
 
-        Decorated ``exclusive=True`` so a second ctrl+d press while a delete
-        flow is already in progress cancels the first rather than running
-        two delete flows concurrently against the same cache.
+        Guarded by a simple in-progress flag so a second ctrl+d press is
+        dropped rather than launching a concurrent worker. A cancelling
+        semantic (exclusive=True) would leave the open modal orphaned when
+        the first worker is torn down mid-dialog, so we drop instead.
         """
+        if self._delete_in_progress:
+            return
+        self._delete_in_progress = True
+        try:
+            await self._do_delete_worktree()
+        finally:
+            self._delete_in_progress = False
+
+    async def _do_delete_worktree(self) -> None:
         if self._selection_cache.count > 0:
             await self._run_bulk_delete()
             return

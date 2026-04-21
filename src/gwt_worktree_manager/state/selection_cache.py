@@ -27,7 +27,12 @@ class SelectionCache:
         return len(self._entries)
 
     def on_change(self, callback: ChangeCallback | None) -> None:
-        """Register a single callback invoked with the new count on mutation."""
+        """Register a single callback invoked with the new count on mutation.
+
+        Exceptions raised by the callback are caught and surfaced as a
+        warnings.warn so they do not abort the cache mutation. Pass None
+        to clear the current callback.
+        """
         self._on_change = callback
 
     def toggle(self, entry: WorktreeEntry) -> bool:
@@ -68,11 +73,11 @@ class SelectionCache:
         worktrees that were deleted out-of-band.
         """
         valid = set(valid_ids)
-        to_drop = [
+        to_drop = {
             wid
             for wid, entry in self._entries.items()
             if entry.repo_name == repo_name and wid not in valid
-        ]
+        }
         if to_drop:
             for wid in to_drop:
                 del self._entries[wid]

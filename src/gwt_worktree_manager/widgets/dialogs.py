@@ -502,7 +502,9 @@ class BulkDeleteDialog(ModalScreen):
         row = table.cursor_row
         try:
             row_key, _ = table.coordinate_to_cell_key((row, 0))
-        except Exception:
+        except Exception as exc:
+            import warnings
+            warnings.warn(f"BulkDeleteDialog: failed to resolve row key: {exc!r}")
             return
         target_id = str(row_key.value) if row_key is not None else None
         if target_id is None:
