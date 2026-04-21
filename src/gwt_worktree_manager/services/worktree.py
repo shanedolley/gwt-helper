@@ -63,6 +63,15 @@ class OpenResult:
     command_executed: str | None = None
 
 
+@dataclass
+class BulkDeleteResult:
+    """Aggregated outcome of a bulk delete run."""
+
+    succeeded: list[str]
+    dirty: list[WorktreeEntry]
+    failed: list[tuple[str, Exception]]
+
+
 # ==============================================================================
 # Helper functions
 # ==============================================================================
@@ -344,6 +353,35 @@ class WorktreeService:
                 warnings.warn(f"Failed to delete branch {entry.branch}: {e}")
 
         self._metadata.delete(worktree_id)
+
+    async def delete_worktrees_bulk(
+        self,
+        entries: list[WorktreeEntry],
+        *,
+        delete_branch: bool,
+        force: bool = False,
+    ) -> "BulkDeleteResult":
+        """Delete a batch of worktrees, continuing past individual failures.
+
+        Returns a BulkDeleteResult partitioning outcomes into succeeded
+        (including worktrees that were already gone), dirty (raised
+        UncommittedChangesError), and failed (all other exceptions).
+        The input list is not mutated.
+        """
+        result = BulkDeleteResult(succeeded=[], dirty=[], failed=[])
+        for entry in list(entries):
+            try:
+                await self.delete_worktree(
+                    entry.id, delete_branch=delete_branch, force=force
+                )
+                result.succeeded.append(entry.id)
+            except WorktreeNotFoundError:
+                result.succeeded.append(entry.id)
+            except UncommittedChangesError:
+                result.dirty.append(entry)
+            except Exception as exc:  # noqa: BLE001 — intentional catch-all
+                result.failed.append((entry.id, exc))
+        return result
 
     async def open_worktree(self, worktree_id: str) -> OpenResult:
         """Open a worktree using the configured action."""
