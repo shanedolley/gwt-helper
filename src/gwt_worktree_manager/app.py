@@ -163,6 +163,12 @@ class GWTApp(App):
         self.query_one("#left-panel").styles.width = self._ui_state.left_panel_width
 
         status = self.query_one(GWTStatusBar)
+
+        def _sync_mark_count(count: int) -> None:
+            status.mark_count = count
+
+        self._selection_cache.on_change(_sync_mark_count)
+
         status.update_status("Scanning repos...")
 
         self._repos = await self._discovery.discover_repos()

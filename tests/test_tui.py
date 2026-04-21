@@ -378,6 +378,57 @@ class TestStatusBar:
             await pilot.pause()
             assert str(status.content) == "Second"
 
+    @pytest.mark.asyncio
+    async def test_mark_count_appends_suffix(self):
+        """Non-zero mark_count appends ' | N marked' suffix."""
+        async with GWTApp().run_test() as pilot:
+            status = pilot.app.query_one(GWTStatusBar)
+            status.update_status("Ready")
+            status.mark_count = 3
+            await pilot.pause()
+            assert str(status.content) == "Ready | 3 marked"
+
+    @pytest.mark.asyncio
+    async def test_mark_count_zero_drops_suffix(self):
+        """mark_count == 0 renders just the base message."""
+        async with GWTApp().run_test() as pilot:
+            status = pilot.app.query_one(GWTStatusBar)
+            status.update_status("Ready")
+            status.mark_count = 2
+            await pilot.pause()
+            status.mark_count = 0
+            await pilot.pause()
+            assert str(status.content) == "Ready"
+
+    @pytest.mark.asyncio
+    async def test_update_status_preserves_suffix(self):
+        """Updating the base message while marks exist keeps the suffix."""
+        async with GWTApp().run_test() as pilot:
+            status = pilot.app.query_one(GWTStatusBar)
+            status.mark_count = 5
+            status.update_status("Other")
+            await pilot.pause()
+            assert str(status.content) == "Other | 5 marked"
+
+    @pytest.mark.asyncio
+    async def test_status_bar_observes_selection_cache(self):
+        """Toggling worktrees via space updates the status bar mark count."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            status = pilot.app.query_one(GWTStatusBar)
+            status.update_status("Ready")
+            wt_panel.set_worktrees([
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ])
+            await pilot.pause()
+            wt_panel._table.focus()
+            await pilot.pause()
+            await pilot.press("space")
+            assert "1 marked" in str(status.content)
+            await pilot.press("space")
+            assert "2 marked" in str(status.content)
+
 
 # ---------------------------------------------------------------------------
 # CreateDialog
