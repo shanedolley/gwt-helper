@@ -55,13 +55,12 @@ class TestGWTApp:
             assert pilot.app.query_one(GWTStatusBar) is not None
 
     @pytest.mark.asyncio
-    async def test_app_shows_status_on_mount(self):
-        """Status bar shows a message after mounting."""
+    async def test_app_clears_status_after_mount(self):
+        """Status bar is blank once the initial scan has completed."""
         async with GWTApp().run_test() as pilot:
             await pilot.pause()
             status = pilot.app.query_one(GWTStatusBar)
-            text = str(status.content).lower()
-            assert any(word in text for word in ("repos", "ready", "scanning"))
+            assert str(status.content) == ""
 
     @pytest.mark.asyncio
     async def test_quit_binding(self):
@@ -80,14 +79,13 @@ class TestGWTApp:
 
     @pytest.mark.asyncio
     async def test_refresh_action(self):
-        """Pressing 'r' triggers a refresh without error."""
+        """Pressing 'r' triggers a refresh and leaves the status blank."""
         async with GWTApp().run_test() as pilot:
             await pilot.pause()
             await pilot.press("r")
             await pilot.pause()
             status = pilot.app.query_one(GWTStatusBar)
-            text = str(status.content).lower()
-            assert "repos" in text
+            assert str(status.content) == ""
 
     @pytest.mark.asyncio
     async def test_tab_cycles_focus(self):
@@ -547,7 +545,7 @@ class TestDispatchFork:
 
             calls: list[dict] = []
 
-            async def _fake_bulk(entries, *, delete_branch, force=False):
+            async def _fake_bulk(entries, *, delete_branch, force=False, on_progress=None):
                 calls.append(
                     {
                         "ids": [e.id for e in entries],
@@ -597,7 +595,7 @@ class TestDispatchFork:
 
             bulk_calls: list[tuple[list[str], bool]] = []
 
-            async def _fake_bulk(entries, *, delete_branch, force=False):
+            async def _fake_bulk(entries, *, delete_branch, force=False, on_progress=None):
                 bulk_calls.append(([e.id for e in entries], force))
                 if not force:
                     return BulkDeleteResult(succeeded=["a"], dirty=[b], failed=[])
@@ -640,7 +638,7 @@ class TestDispatchFork:
             app._selection_cache.toggle(a)
             app._selection_cache.toggle(b)
 
-            async def _fake_bulk(entries, *, delete_branch, force=False):
+            async def _fake_bulk(entries, *, delete_branch, force=False, on_progress=None):
                 return BulkDeleteResult(succeeded=["a"], dirty=[b], failed=[])
 
             app._service.delete_worktrees_bulk = _fake_bulk

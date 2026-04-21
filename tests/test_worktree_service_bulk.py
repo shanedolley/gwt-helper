@@ -127,3 +127,29 @@ class TestDeleteWorktreesBulk:
         assert result.succeeded == ["a"]
         assert len(result.failed) == 1
         assert isinstance(result.failed[0][1], ValueError)
+
+    @pytest.mark.asyncio
+    async def test_on_progress_called_with_1_based_index_and_total(self):
+        service = _FakeService({"a": "success", "b": "success", "c": "success"})
+        entries = [_entry("a"), _entry("b"), _entry("c")]
+        progress_calls: list[tuple[int, int, str]] = []
+
+        def _record(i, total, entry):
+            progress_calls.append((i, total, entry.id))
+
+        await service.delete_worktrees_bulk(
+            entries, delete_branch=False, on_progress=_record
+        )
+        assert progress_calls == [(1, 3, "a"), (2, 3, "b"), (3, 3, "c")]
+
+    @pytest.mark.asyncio
+    async def test_on_progress_exception_does_not_abort_batch(self):
+        service = _FakeService({"a": "success", "b": "success"})
+
+        def _bad(i, total, entry):
+            raise RuntimeError("progress boom")
+
+        result = await service.delete_worktrees_bulk(
+            [_entry("a"), _entry("b")], delete_branch=False, on_progress=_bad
+        )
+        assert result.succeeded == ["a", "b"]

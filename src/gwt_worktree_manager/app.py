@@ -193,7 +193,7 @@ class GWTApp(App):
             except Exception:
                 pass
 
-        status.update_status(f"Ready | {len(self._repos)} repos")
+        status.update_status("")
         repo_panel.focus_tree()
 
     async def on_repo_panel_repo_selected(self, event: RepoPanel.RepoSelected) -> None:
@@ -202,11 +202,6 @@ class GWTApp(App):
         worktree_panel = self.query_one(WorktreePanel)
         entries = await self._service.list_worktrees(repo_name=event.repo.name)
         worktree_panel.set_worktrees(entries)
-
-        status = self.query_one(GWTStatusBar)
-        status.update_status(
-            f"Ready | {len(self._repos)} repos | {event.repo.name}"
-        )
 
     async def on_repo_panel_repo_confirmed(self, event: RepoPanel.RepoConfirmed) -> None:
         """Handle Enter on a repo — focus the worktree panel."""
@@ -256,7 +251,7 @@ class GWTApp(App):
                     entry.repo_name,
                     Path(entry.path),
                 )
-                status.update_status(f"Created: {entry.branch}")
+                status.update_status("")
                 if (
                     self._selected_repo
                     and self._selected_repo.name == entry.repo_name
@@ -306,6 +301,7 @@ class GWTApp(App):
         status = self.query_one(GWTStatusBar)
         delete_branch = result.get("delete_branch", False)
 
+        status.update_status(f"Deleting {entry.branch}...")
         try:
             await self._service.delete_worktree(
                 entry.id, delete_branch=delete_branch
@@ -313,8 +309,9 @@ class GWTApp(App):
         except UncommittedChangesError as e:
             force = await self.push_screen_wait(ForceDeleteDialog(str(e)))
             if not force:
-                status.update_status("Delete cancelled")
+                status.update_status("")
                 return
+            status.update_status(f"Force-deleting {entry.branch}...")
             try:
                 await self._service.delete_worktree(
                     entry.id, delete_branch=delete_branch, force=True
@@ -326,8 +323,8 @@ class GWTApp(App):
             status.update_status(f"Error: {e}")
             return
 
-        status.update_status(f"Deleted: {entry.branch}")
         await self._refresh_current_repo_worktrees()
+        status.update_status("")
 
     async def _run_bulk_delete(self) -> None:
         """Run the bulk-delete flow when the selection cache is non-empty."""
@@ -345,8 +342,14 @@ class GWTApp(App):
         working: list = result["entries"]
         delete_branch: bool = result["delete_branch"]
 
+        def _progress(i: int, total: int, entry) -> None:
+            status.update_status(f"Deleting {i} of {total}: {entry.branch}")
+
         first = await self._service.delete_worktrees_bulk(
-            working, delete_branch=delete_branch, force=False
+            working,
+            delete_branch=delete_branch,
+            force=False,
+            on_progress=_progress,
         )
 
         force_result = BulkDeleteResult(succeeded=[], dirty=[], failed=[])
@@ -354,8 +357,16 @@ class GWTApp(App):
         if first.dirty:
             force = await self.push_screen_wait(BulkForceDeleteDialog(first.dirty))
             if force:
+                def _force_progress(i: int, total: int, entry) -> None:
+                    status.update_status(
+                        f"Force-deleting {i} of {total}: {entry.branch}"
+                    )
+
                 force_result = await self._service.delete_worktrees_bulk(
-                    first.dirty, delete_branch=delete_branch, force=True
+                    first.dirty,
+                    delete_branch=delete_branch,
+                    force=True,
+                    on_progress=_force_progress,
                 )
             else:
                 dirty_skipped = len(first.dirty)
@@ -369,12 +380,16 @@ class GWTApp(App):
         ]
         self._selection_cache.clear_succeeded(to_clear)
 
+        await self._refresh_current_repo_worktrees()
+
         succeeded = len(first.succeeded) + len(force_result.succeeded)
         failed = len(first.failed) + len(force_result.failed)
-        status.update_status(
-            f"Deleted {succeeded}, failed {failed}, dirty-skipped {dirty_skipped}"
-        )
-        await self._refresh_current_repo_worktrees()
+        if failed == 0 and dirty_skipped == 0:
+            status.update_status("")
+        else:
+            status.update_status(
+                f"Deleted {succeeded}, failed {failed}, dirty-skipped {dirty_skipped}"
+            )
 
     async def _refresh_current_repo_worktrees(self) -> None:
         if not self._selected_repo:
@@ -479,7 +494,7 @@ class GWTApp(App):
         if previous_repo:
             repo_panel.select_by_name(previous_repo.name)
 
-        status.update_status(f"Ready | {len(self._repos)} repos")
+        status.update_status("")
 
     @work
     async def action_yank(self) -> None:

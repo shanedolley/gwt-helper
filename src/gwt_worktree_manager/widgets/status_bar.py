@@ -22,7 +22,10 @@ class GWTStatusBar(Static):
         self._refresh()
 
     def _refresh(self) -> None:
-        if self.mark_count > 0:
-            self.update(f"{self._base_message} | {self.mark_count} marked")
+        suffix = f"{self.mark_count} marked" if self.mark_count > 0 else ""
+        if self._base_message and suffix:
+            self.update(f"{self._base_message} | {suffix}")
+        elif suffix:
+            self.update(suffix)
         else:
             self.update(self._base_message)

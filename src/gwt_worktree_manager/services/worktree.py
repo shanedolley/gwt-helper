@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 import re
 import shutil
 import uuid
@@ -360,12 +360,18 @@ class WorktreeService:
         *,
         delete_branch: bool,
         force: bool = False,
+        on_progress: "Callable[[int, int, WorktreeEntry], None] | None" = None,
     ) -> "BulkDeleteResult":
         """Delete a batch of worktrees, continuing past individual failures.
 
         Returns a BulkDeleteResult partitioning outcomes into succeeded
         (including worktrees that were already gone), dirty (raised
         UncommittedChangesError), and failed (all other exceptions).
+
+        ``on_progress`` is called before each entry is processed with
+        ``(index_1_based, total, entry)`` so callers can surface progress
+        in a status bar. Exceptions raised by the callback are swallowed
+        so progress reporting cannot break the batch.
 
         The bare ``except Exception`` below is intentional: it ensures
         per-entry errors are collected into ``result.failed`` rather than
@@ -374,7 +380,13 @@ class WorktreeService:
         propagate, so task cancellation remains responsive.
         """
         result = BulkDeleteResult(succeeded=[], dirty=[], failed=[])
-        for entry in entries:
+        total = len(entries)
+        for i, entry in enumerate(entries, start=1):
+            if on_progress is not None:
+                try:
+                    on_progress(i, total, entry)
+                except Exception:  # noqa: BLE001 — progress must not crash the batch
+                    pass
             if not entry.id:
                 result.failed.append(
                     (entry.id or "<no-id>", ValueError("entry missing id"))
