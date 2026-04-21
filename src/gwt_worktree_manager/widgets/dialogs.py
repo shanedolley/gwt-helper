@@ -2,7 +2,16 @@
 
 from textual.binding import Binding
 from textual.screen import ModalScreen
-from textual.widgets import Label, Input, Select, Button, RadioButton, RadioSet
+from textual.widgets import (
+    Button,
+    Checkbox,
+    DataTable,
+    Input,
+    Label,
+    RadioButton,
+    RadioSet,
+    Select,
+)
 from textual.containers import Vertical, Horizontal, VerticalScroll
 
 import re
@@ -415,6 +424,157 @@ class DeleteDialog(ModalScreen):
             radio = self.query_one("#branch-radio", RadioSet)
             delete_branch = radio.pressed_index == 0
             self.dismiss({"delete_branch": delete_branch})
+
+
+class BulkDeleteDialog(ModalScreen):
+    """Modal dialog for reviewing and confirming a bulk-delete set."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("x", "unmark_row", "Unmark row", show=False),
+    ]
+
+    CSS = DIALOG_BUTTON_CSS + """
+    BulkDeleteDialog {
+        align: center middle;
+    }
+
+    #bulk-dialog {
+        width: 80;
+        height: auto;
+        max-height: 80%;
+        border: thick $error;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #bulk-list {
+        height: auto;
+        max-height: 20;
+    }
+    """
+
+    def __init__(self, entries: list[WorktreeEntry]) -> None:
+        super().__init__()
+        self._working: list[WorktreeEntry] = list(entries)
+
+    def compose(self):
+        with VerticalScroll(id="bulk-dialog"):
+            yield Label("Bulk Delete Worktrees", classes="dialog-title")
+            yield Label(self._header_text(), id="bulk-header")
+            yield Label("")
+            table = DataTable(cursor_type="row", id="bulk-list")
+            table.add_columns("Repo", "Branch", "Path")
+            yield table
+            yield Label("")
+            yield Checkbox("Also delete branches", value=False, id="bulk-delete-branch")
+            yield Label("")
+            yield Label("Press x to unmark the highlighted row.", classes="hint")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Cancel", variant="default", id="btn-bulk-cancel")
+                yield Button("Delete", variant="error", id="btn-bulk-confirm")
+
+    async def on_mount(self) -> None:
+        self._populate_table()
+
+    def _header_text(self) -> str:
+        repos = {e.repo_name for e in self._working}
+        return f"{len(self._working)} worktrees across {len(repos)} repos"
+
+    def _populate_table(self) -> None:
+        table = self.query_one("#bulk-list", DataTable)
+        table.clear()
+        for entry in self._working:
+            table.add_row(entry.repo_name, entry.branch, entry.path, key=entry.id)
+
+    def _refresh_view(self) -> None:
+        self.query_one("#bulk-header", Label).update(self._header_text())
+        self._populate_table()
+        self.query_one("#btn-bulk-confirm", Button).disabled = len(self._working) == 0
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_unmark_row(self) -> None:
+        table = self.query_one("#bulk-list", DataTable)
+        if not self._working:
+            return
+        row = table.cursor_row
+        if 0 <= row < len(self._working):
+            del self._working[row]
+            self._refresh_view()
+            if self._working:
+                table.move_cursor(row=min(row, len(self._working) - 1))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-bulk-cancel":
+            self.dismiss(None)
+        elif event.button.id == "btn-bulk-confirm":
+            if not self._working:
+                return
+            delete_branch = self.query_one("#bulk-delete-branch", Checkbox).value
+            self.dismiss(
+                {"entries": list(self._working), "delete_branch": delete_branch}
+            )
+
+
+class BulkForceDeleteDialog(ModalScreen):
+    """Follow-up dialog shown when some bulk-delete entries had uncommitted changes."""
+
+    BINDINGS = [
+        Binding("escape", "skip", "Skip", show=False),
+    ]
+
+    CSS = DIALOG_BUTTON_CSS + """
+    BulkForceDeleteDialog {
+        align: center middle;
+    }
+
+    #force-bulk-dialog {
+        width: 80;
+        height: auto;
+        max-height: 80%;
+        border: thick $error;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #force-bulk-list {
+        height: auto;
+        max-height: 15;
+    }
+    """
+
+    def __init__(self, entries: list[WorktreeEntry]) -> None:
+        super().__init__()
+        self._entries = entries
+
+    def compose(self):
+        with VerticalScroll(id="force-bulk-dialog"):
+            yield Label("Uncommitted Changes Detected", classes="dialog-title")
+            yield Label(
+                f"Force delete {len(self._entries)} worktrees with uncommitted changes?",
+                id="force-header",
+            )
+            yield Label("")
+            table = DataTable(cursor_type="row", id="force-bulk-list")
+            table.add_columns("Repo", "Branch", "Path")
+            for entry in self._entries:
+                table.add_row(entry.repo_name, entry.branch, entry.path, key=entry.id)
+            yield table
+            yield Label("")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Skip", variant="default", id="btn-force-skip")
+                yield Button("Force All", variant="error", id="btn-force-all")
+
+    def action_skip(self) -> None:
+        self.dismiss(False)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-force-skip":
+            self.dismiss(False)
+        elif event.button.id == "btn-force-all":
+            self.dismiss(True)
 
 
 class ForceDeleteDialog(ModalScreen):
