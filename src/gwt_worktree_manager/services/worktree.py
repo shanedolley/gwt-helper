@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 import re
 import shutil
 import uuid
@@ -61,6 +61,15 @@ class OpenResult:
     action: Literal["cd", "command"]
     cd_path: Path | None = None
     command_executed: str | None = None
+
+
+@dataclass
+class BulkDeleteResult:
+    """Aggregated outcome of a bulk delete run."""
+
+    succeeded: list[str]
+    dirty: list[WorktreeEntry]
+    failed: list[tuple[str, Exception]]
 
 
 # ==============================================================================
@@ -344,6 +353,57 @@ class WorktreeService:
                 warnings.warn(f"Failed to delete branch {entry.branch}: {e}")
 
         self._metadata.delete(worktree_id)
+
+    async def delete_worktrees_bulk(
+        self,
+        entries: list[WorktreeEntry],
+        *,
+        delete_branch: bool,
+        force: bool = False,
+        on_progress: "Callable[[int, int, WorktreeEntry], None] | None" = None,
+    ) -> "BulkDeleteResult":
+        """Delete a batch of worktrees, continuing past individual failures.
+
+        Returns a BulkDeleteResult partitioning outcomes into succeeded
+        (including worktrees that were already gone), dirty (raised
+        UncommittedChangesError), and failed (all other exceptions).
+
+        ``on_progress`` is called before each entry is processed with
+        ``(index_1_based, total, entry)`` so callers can surface progress
+        in a status bar. Exceptions raised by the callback are swallowed
+        so progress reporting cannot break the batch.
+
+        The bare ``except Exception`` below is intentional: it ensures
+        per-entry errors are collected into ``result.failed`` rather than
+        aborting the batch. BaseException subclasses such as
+        KeyboardInterrupt, SystemExit, and asyncio.CancelledError still
+        propagate, so task cancellation remains responsive.
+        """
+        result = BulkDeleteResult(succeeded=[], dirty=[], failed=[])
+        total = len(entries)
+        for i, entry in enumerate(entries, start=1):
+            if on_progress is not None:
+                try:
+                    on_progress(i, total, entry)
+                except Exception:  # noqa: BLE001 — progress must not crash the batch
+                    pass
+            if not entry.id:
+                result.failed.append(
+                    (entry.id or "<no-id>", ValueError("entry missing id"))
+                )
+                continue
+            try:
+                await self.delete_worktree(
+                    entry.id, delete_branch=delete_branch, force=force
+                )
+                result.succeeded.append(entry.id)
+            except WorktreeNotFoundError:
+                result.succeeded.append(entry.id)
+            except UncommittedChangesError:
+                result.dirty.append(entry)
+            except Exception as exc:  # noqa: BLE001 — see docstring
+                result.failed.append((entry.id, exc))
+        return result
 
     async def open_worktree(self, worktree_id: str) -> OpenResult:
         """Open a worktree using the configured action."""

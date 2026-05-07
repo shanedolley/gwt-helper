@@ -5,7 +5,12 @@ import pytest
 from gwt_worktree_manager.app import GWTApp
 from gwt_worktree_manager.store.metadata import WorktreeEntry
 from gwt_worktree_manager.widgets.detail_panel import DetailPanel
-from gwt_worktree_manager.widgets.dialogs import CreateDialog, DeleteDialog
+from gwt_worktree_manager.widgets.dialogs import (
+    BulkDeleteDialog,
+    BulkForceDeleteDialog,
+    CreateDialog,
+    DeleteDialog,
+)
 from gwt_worktree_manager.widgets.repo_panel import RepoPanel
 from gwt_worktree_manager.widgets.status_bar import GWTStatusBar
 from gwt_worktree_manager.widgets.worktree_panel import WorktreePanel
@@ -50,13 +55,12 @@ class TestGWTApp:
             assert pilot.app.query_one(GWTStatusBar) is not None
 
     @pytest.mark.asyncio
-    async def test_app_shows_status_on_mount(self):
-        """Status bar shows a message after mounting."""
+    async def test_app_clears_status_after_mount(self):
+        """Status bar is blank once the initial scan has completed."""
         async with GWTApp().run_test() as pilot:
             await pilot.pause()
             status = pilot.app.query_one(GWTStatusBar)
-            text = str(status.content).lower()
-            assert any(word in text for word in ("repos", "ready", "scanning"))
+            assert str(status.content) == ""
 
     @pytest.mark.asyncio
     async def test_quit_binding(self):
@@ -75,14 +79,13 @@ class TestGWTApp:
 
     @pytest.mark.asyncio
     async def test_refresh_action(self):
-        """Pressing 'r' triggers a refresh without error."""
+        """Pressing 'r' triggers a refresh and leaves the status blank."""
         async with GWTApp().run_test() as pilot:
             await pilot.pause()
             await pilot.press("r")
             await pilot.pause()
             status = pilot.app.query_one(GWTStatusBar)
-            text = str(status.content).lower()
-            assert "repos" in text
+            assert str(status.content) == ""
 
     @pytest.mark.asyncio
     async def test_tab_cycles_focus(self):
@@ -193,6 +196,104 @@ class TestWorktreePanel:
             assert wt_panel._entries[1].id == "old"
 
 
+class TestWorktreePanelMarking:
+    @pytest.mark.asyncio
+    async def test_space_marks_current_row(self):
+        """Pressing space toggles the mark on the highlighted row."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            entries = [
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ]
+            wt_panel.set_worktrees(entries)
+            await pilot.pause()
+            wt_panel._table.focus()
+            await pilot.pause()
+            await pilot.press("space")
+            cache = pilot.app._selection_cache
+            assert cache.contains("a") is True
+            assert cache.count == 1
+
+    @pytest.mark.asyncio
+    async def test_space_advances_cursor(self):
+        """After toggling, the cursor moves to the next row."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            entries = [
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ]
+            wt_panel.set_worktrees(entries)
+            await pilot.pause()
+            wt_panel._table.focus()
+            await pilot.pause()
+            await pilot.press("space")
+            assert wt_panel._table.cursor_row == 1
+
+    @pytest.mark.asyncio
+    async def test_space_on_last_row_does_not_wrap(self):
+        """Cursor stays on last row when space is pressed there."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            entries = [_make_entry(id="only", branch="feature/only")]
+            wt_panel.set_worktrees(entries)
+            await pilot.pause()
+            wt_panel._table.focus()
+            await pilot.pause()
+            await pilot.press("space")
+            assert wt_panel._table.cursor_row == 0
+            assert pilot.app._selection_cache.contains("only") is True
+
+    @pytest.mark.asyncio
+    async def test_space_toggles_off(self):
+        """Pressing space on a marked row unmarks it."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            entries = [_make_entry(id="a", branch="feature/a")]
+            wt_panel.set_worktrees(entries)
+            await pilot.pause()
+            wt_panel._table.focus()
+            await pilot.pause()
+            await pilot.press("space")
+            wt_panel._table.move_cursor(row=0)
+            await pilot.pause()
+            await pilot.press("space")
+            assert pilot.app._selection_cache.contains("a") is False
+
+    @pytest.mark.asyncio
+    async def test_space_on_empty_table_is_noop(self):
+        """Space on an empty worktree panel does nothing."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            wt_panel.set_worktrees([])
+            await pilot.pause()
+            await pilot.press("space")
+            assert pilot.app._selection_cache.count == 0
+
+    @pytest.mark.asyncio
+    async def test_marks_survive_repo_switch_simulation(self):
+        """After set_worktrees is called again, marker re-applies for cached IDs."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            cache = pilot.app._selection_cache
+            e = _make_entry(id="persists", repo_name="alpha", branch="feature/persists")
+            cache.toggle(e)
+            wt_panel.set_worktrees([e])
+            await pilot.pause()
+            marker_cell = wt_panel._table.get_cell_at((0, 0))
+            assert str(marker_cell).strip() == "●"
+
+    @pytest.mark.asyncio
+    async def test_unmarked_row_shows_blank_marker(self):
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            wt_panel.set_worktrees([_make_entry(id="a", branch="feature/a")])
+            await pilot.pause()
+            marker_cell = wt_panel._table.get_cell_at((0, 0))
+            assert str(marker_cell).strip() == ""
+
+
 # ---------------------------------------------------------------------------
 # DetailPanel
 # ---------------------------------------------------------------------------
@@ -280,6 +381,57 @@ class TestStatusBar:
             await pilot.pause()
             assert str(status.content) == "Second"
 
+    @pytest.mark.asyncio
+    async def test_mark_count_appends_suffix(self):
+        """Non-zero mark_count appends ' | N marked' suffix."""
+        async with GWTApp().run_test() as pilot:
+            status = pilot.app.query_one(GWTStatusBar)
+            status.update_status("Ready")
+            status.mark_count = 3
+            await pilot.pause()
+            assert str(status.content) == "Ready | 3 marked"
+
+    @pytest.mark.asyncio
+    async def test_mark_count_zero_drops_suffix(self):
+        """mark_count == 0 renders just the base message."""
+        async with GWTApp().run_test() as pilot:
+            status = pilot.app.query_one(GWTStatusBar)
+            status.update_status("Ready")
+            status.mark_count = 2
+            await pilot.pause()
+            status.mark_count = 0
+            await pilot.pause()
+            assert str(status.content) == "Ready"
+
+    @pytest.mark.asyncio
+    async def test_update_status_preserves_suffix(self):
+        """Updating the base message while marks exist keeps the suffix."""
+        async with GWTApp().run_test() as pilot:
+            status = pilot.app.query_one(GWTStatusBar)
+            status.mark_count = 5
+            status.update_status("Other")
+            await pilot.pause()
+            assert str(status.content) == "Other | 5 marked"
+
+    @pytest.mark.asyncio
+    async def test_status_bar_observes_selection_cache(self):
+        """Toggling worktrees via space updates the status bar mark count."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            status = pilot.app.query_one(GWTStatusBar)
+            status.update_status("Ready")
+            wt_panel.set_worktrees([
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ])
+            await pilot.pause()
+            wt_panel._table.focus()
+            await pilot.pause()
+            await pilot.press("space")
+            assert "1 marked" in str(status.content)
+            await pilot.press("space")
+            assert "2 marked" in str(status.content)
+
 
 # ---------------------------------------------------------------------------
 # CreateDialog
@@ -301,3 +453,210 @@ class TestCreateDialog:
         entry = _make_entry()
         dialog = DeleteDialog(entry)
         assert dialog is not None
+
+
+class TestDispatchFork:
+    @pytest.mark.asyncio
+    async def test_empty_cache_opens_single_delete_dialog(self):
+        """ctrl+d with no marks pushes DeleteDialog, not BulkDeleteDialog."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            wt_panel = app.query_one(WorktreePanel)
+            wt_panel.set_worktrees([_make_entry(id="a", branch="feature/a")])
+            await pilot.pause()
+            wt_panel._table.focus()
+            await pilot.pause()
+            assert app._selection_cache.count == 0
+
+            screens = []
+            orig = app.push_screen_wait
+
+            async def _capture(screen, *args, **kwargs):
+                screens.append(screen)
+                return None
+
+            app.push_screen_wait = _capture
+            try:
+                app.action_delete_worktree()
+                for _ in range(10):
+                    await pilot.pause()
+                    if screens:
+                        break
+            finally:
+                app.push_screen_wait = orig
+
+            assert len(screens) == 1
+            assert isinstance(screens[0], DeleteDialog)
+            assert not isinstance(screens[0], BulkDeleteDialog)
+
+    @pytest.mark.asyncio
+    async def test_non_empty_cache_opens_bulk_delete_dialog(self):
+        """ctrl+d with marks pushes BulkDeleteDialog with pre-resolved entries."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            wt_panel = app.query_one(WorktreePanel)
+            entries = [
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ]
+            wt_panel.set_worktrees(entries)
+            await pilot.pause()
+            app._selection_cache.toggle(entries[0])
+            app._selection_cache.toggle(entries[1])
+            assert app._selection_cache.count == 2
+
+            screens = []
+            orig = app.push_screen_wait
+
+            async def _capture(screen, *args, **kwargs):
+                screens.append(screen)
+                return None  # cancel the dialog
+
+            app.push_screen_wait = _capture
+            try:
+                app.action_delete_worktree()
+                for _ in range(10):
+                    await pilot.pause()
+                    if screens:
+                        break
+            finally:
+                app.push_screen_wait = orig
+
+            assert len(screens) == 1
+            assert isinstance(screens[0], BulkDeleteDialog)
+            assert [e.id for e in screens[0]._working] == ["a", "b"]
+
+    @pytest.mark.asyncio
+    async def test_bulk_confirm_invokes_service_and_clears_succeeded(self, monkeypatch):
+        """Confirming the bulk dialog calls delete_worktrees_bulk and clears the cache."""
+        from gwt_worktree_manager.services.worktree import BulkDeleteResult
+
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            wt_panel = app.query_one(WorktreePanel)
+            entries = [
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ]
+            wt_panel.set_worktrees(entries)
+            await pilot.pause()
+            app._selection_cache.toggle(entries[0])
+            app._selection_cache.toggle(entries[1])
+
+            calls: list[dict] = []
+
+            async def _fake_bulk(entries, *, delete_branch, force=False, on_progress=None):
+                calls.append(
+                    {
+                        "ids": [e.id for e in entries],
+                        "delete_branch": delete_branch,
+                        "force": force,
+                    }
+                )
+                return BulkDeleteResult(
+                    succeeded=[e.id for e in entries], dirty=[], failed=[]
+                )
+
+            app._service.delete_worktrees_bulk = _fake_bulk
+
+            async def _fake_push(screen, *args, **kwargs):
+                if isinstance(screen, BulkDeleteDialog):
+                    return {"entries": list(screen._working), "delete_branch": True}
+                return None
+
+            app.push_screen_wait = _fake_push
+
+            app.action_delete_worktree()
+            for _ in range(20):
+                await pilot.pause()
+                if calls and app._selection_cache.count == 0:
+                    break
+
+            assert len(calls) == 1
+            assert sorted(calls[0]["ids"]) == ["a", "b"]
+            assert calls[0]["delete_branch"] is True
+            assert calls[0]["force"] is False
+            assert app._selection_cache.count == 0
+
+    @pytest.mark.asyncio
+    async def test_bulk_dirty_triggers_force_dialog_and_force_all(self, monkeypatch):
+        """Dirty items surface a BulkForceDeleteDialog; Force All runs the second pass."""
+        from gwt_worktree_manager.services.worktree import BulkDeleteResult
+
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            wt_panel = app.query_one(WorktreePanel)
+            a = _make_entry(id="a", branch="feature/a")
+            b = _make_entry(id="b", branch="feature/b")
+            wt_panel.set_worktrees([a, b])
+            await pilot.pause()
+            app._selection_cache.toggle(a)
+            app._selection_cache.toggle(b)
+
+            bulk_calls: list[tuple[list[str], bool]] = []
+
+            async def _fake_bulk(entries, *, delete_branch, force=False, on_progress=None):
+                bulk_calls.append(([e.id for e in entries], force))
+                if not force:
+                    return BulkDeleteResult(succeeded=["a"], dirty=[b], failed=[])
+                return BulkDeleteResult(succeeded=["b"], dirty=[], failed=[])
+
+            app._service.delete_worktrees_bulk = _fake_bulk
+
+            async def _fake_push(screen, *args, **kwargs):
+                if isinstance(screen, BulkDeleteDialog):
+                    return {"entries": list(screen._working), "delete_branch": False}
+                if isinstance(screen, BulkForceDeleteDialog):
+                    return True  # Force All
+                return None
+
+            app.push_screen_wait = _fake_push
+
+            app.action_delete_worktree()
+            for _ in range(30):
+                await pilot.pause()
+                if len(bulk_calls) == 2:
+                    break
+
+            assert len(bulk_calls) == 2
+            assert bulk_calls[0] == (["a", "b"], False)
+            assert bulk_calls[1] == (["b"], True)
+            assert app._selection_cache.count == 0
+
+    @pytest.mark.asyncio
+    async def test_bulk_dirty_skip_retains_dirty_items(self):
+        """Skipping the force dialog leaves dirty items in the cache."""
+        from gwt_worktree_manager.services.worktree import BulkDeleteResult
+
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            wt_panel = app.query_one(WorktreePanel)
+            a = _make_entry(id="a", branch="feature/a")
+            b = _make_entry(id="b", branch="feature/b")
+            wt_panel.set_worktrees([a, b])
+            await pilot.pause()
+            app._selection_cache.toggle(a)
+            app._selection_cache.toggle(b)
+
+            async def _fake_bulk(entries, *, delete_branch, force=False, on_progress=None):
+                return BulkDeleteResult(succeeded=["a"], dirty=[b], failed=[])
+
+            app._service.delete_worktrees_bulk = _fake_bulk
+
+            async def _fake_push(screen, *args, **kwargs):
+                if isinstance(screen, BulkDeleteDialog):
+                    return {"entries": list(screen._working), "delete_branch": False}
+                if isinstance(screen, BulkForceDeleteDialog):
+                    return False  # Skip
+                return None
+
+            app.push_screen_wait = _fake_push
+
+            app.action_delete_worktree()
+            for _ in range(20):
+                await pilot.pause()
+                if not app._selection_cache.contains("a"):
+                    break
+
+            assert app._selection_cache.contains("a") is False
+            assert app._selection_cache.contains("b") is True

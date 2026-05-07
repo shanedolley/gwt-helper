@@ -19,11 +19,22 @@ from gwt_worktree_manager.git import operations as git
 from gwt_worktree_manager.services.discovery import RepoDiscovery
 from gwt_worktree_manager.services.hooks import HookRunner
 from gwt_worktree_manager.services.terminal import TerminalOpener
-from gwt_worktree_manager.services.worktree import WorktreeService, UncommittedChangesError
+from gwt_worktree_manager.services.worktree import (
+    BulkDeleteResult,
+    UncommittedChangesError,
+    WorktreeService,
+)
+from gwt_worktree_manager.state.selection_cache import SelectionCache
 from gwt_worktree_manager.store.metadata import MetadataStore, WorktreeEntry
 from gwt_worktree_manager.store.ui_state import UIStateStore
 from gwt_worktree_manager.widgets.detail_panel import DetailPanel
-from gwt_worktree_manager.widgets.dialogs import CreateDialog, DeleteDialog, ForceDeleteDialog
+from gwt_worktree_manager.widgets.dialogs import (
+    BulkDeleteDialog,
+    BulkForceDeleteDialog,
+    CreateDialog,
+    DeleteDialog,
+    ForceDeleteDialog,
+)
 from gwt_worktree_manager.widgets.repo_panel import RepoPanel
 from gwt_worktree_manager.widgets.splitter import SplitterBar
 from gwt_worktree_manager.widgets.status_bar import GWTStatusBar
@@ -138,6 +149,8 @@ class GWTApp(App):
         )
         self._repos: list = []
         self._selected_repo = None
+        self._selection_cache = SelectionCache()
+        self._delete_in_progress = False
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
@@ -147,7 +160,10 @@ class GWTApp(App):
                 yield RepoPanel(id="repo-panel")
             yield SplitterBar(direction="horizontal", id="h-splitter")
             with Vertical(id="right-panel"):
-                yield WorktreePanel(id="worktree-panel")
+                yield WorktreePanel(
+                    selection_cache=self._selection_cache,
+                    id="worktree-panel",
+                )
                 yield DetailPanel(id="detail-panel")
         yield GWTStatusBar(id="status-bar")
         yield Footer()
@@ -158,6 +174,12 @@ class GWTApp(App):
         self.query_one("#left-panel").styles.width = self._ui_state.left_panel_width
 
         status = self.query_one(GWTStatusBar)
+
+        def _sync_mark_count(count: int) -> None:
+            status.mark_count = count
+
+        self._selection_cache.on_change(_sync_mark_count)
+
         status.update_status("Scanning repos...")
 
         self._repos = await self._discovery.discover_repos()
@@ -171,7 +193,7 @@ class GWTApp(App):
             except Exception:
                 pass
 
-        status.update_status(f"Ready | {len(self._repos)} repos")
+        status.update_status("")
         repo_panel.focus_tree()
 
     async def on_repo_panel_repo_selected(self, event: RepoPanel.RepoSelected) -> None:
@@ -180,11 +202,6 @@ class GWTApp(App):
         worktree_panel = self.query_one(WorktreePanel)
         entries = await self._service.list_worktrees(repo_name=event.repo.name)
         worktree_panel.set_worktrees(entries)
-
-        status = self.query_one(GWTStatusBar)
-        status.update_status(
-            f"Ready | {len(self._repos)} repos | {event.repo.name}"
-        )
 
     async def on_repo_panel_repo_confirmed(self, event: RepoPanel.RepoConfirmed) -> None:
         """Handle Enter on a repo — focus the worktree panel."""
@@ -234,7 +251,7 @@ class GWTApp(App):
                     entry.repo_name,
                     Path(entry.path),
                 )
-                status.update_status(f"Created: {entry.branch}")
+                status.update_status("")
                 if (
                     self._selected_repo
                     and self._selected_repo.name == entry.repo_name
@@ -251,7 +268,26 @@ class GWTApp(App):
 
     @work
     async def action_delete_worktree(self) -> None:
-        """Delete the selected worktree after confirmation."""
+        """Delete the selected worktree, or the full mark set when non-empty.
+
+        Guarded by a simple in-progress flag so a second ctrl+d press is
+        dropped rather than launching a concurrent worker. A cancelling
+        semantic (exclusive=True) would leave the open modal orphaned when
+        the first worker is torn down mid-dialog, so we drop instead.
+        """
+        if self._delete_in_progress:
+            return
+        self._delete_in_progress = True
+        try:
+            await self._do_delete_worktree()
+        finally:
+            self._delete_in_progress = False
+
+    async def _do_delete_worktree(self) -> None:
+        if self._selection_cache.count > 0:
+            await self._run_bulk_delete()
+            return
+
         worktree_panel = self.query_one(WorktreePanel)
         entry = worktree_panel.get_selected()
         if entry is None:
@@ -265,6 +301,7 @@ class GWTApp(App):
         status = self.query_one(GWTStatusBar)
         delete_branch = result.get("delete_branch", False)
 
+        status.update_status(f"Deleting {entry.branch}...")
         try:
             await self._service.delete_worktree(
                 entry.id, delete_branch=delete_branch
@@ -272,8 +309,9 @@ class GWTApp(App):
         except UncommittedChangesError as e:
             force = await self.push_screen_wait(ForceDeleteDialog(str(e)))
             if not force:
-                status.update_status("Delete cancelled")
+                status.update_status("")
                 return
+            status.update_status(f"Force-deleting {entry.branch}...")
             try:
                 await self._service.delete_worktree(
                     entry.id, delete_branch=delete_branch, force=True
@@ -285,17 +323,92 @@ class GWTApp(App):
             status.update_status(f"Error: {e}")
             return
 
-        status.update_status(f"Deleted: {entry.branch}")
-        if self._selected_repo:
-            try:
-                worktrees = await git.list_worktrees(self._selected_repo.path)
-                self._metadata.reconcile(worktrees, repo_name=self._selected_repo.name)
-            except Exception:
-                pass
-            entries = await self._service.list_worktrees(
-                repo_name=self._selected_repo.name
+        await self._refresh_current_repo_worktrees()
+        status.update_status("")
+
+    async def _run_bulk_delete(self) -> None:
+        """Run the bulk-delete flow when the selection cache is non-empty."""
+        status = self.query_one(GWTStatusBar)
+        entries = self._selection_cache.resolved_entries()
+        # Snapshot the IDs we're about to process so that concurrent
+        # space-toggles for NEW worktrees during the run don't get wiped
+        # by our end-of-run clear_succeeded call.
+        snapshot_ids = {e.id for e in entries}
+
+        result = await self.push_screen_wait(BulkDeleteDialog(entries))
+        if result is None:
+            return
+
+        working: list = result["entries"]
+        delete_branch: bool = result["delete_branch"]
+
+        def _progress(i: int, total: int, entry) -> None:
+            status.update_status(f"Deleting {i} of {total}: {entry.branch}")
+
+        first = await self._service.delete_worktrees_bulk(
+            working,
+            delete_branch=delete_branch,
+            force=False,
+            on_progress=_progress,
+        )
+
+        force_result = BulkDeleteResult(succeeded=[], dirty=[], failed=[])
+        dirty_skipped = 0
+        if first.dirty:
+            force = await self.push_screen_wait(BulkForceDeleteDialog(first.dirty))
+            if force:
+                def _force_progress(i: int, total: int, entry) -> None:
+                    status.update_status(
+                        f"Force-deleting {i} of {total}: {entry.branch}"
+                    )
+
+                force_result = await self._service.delete_worktrees_bulk(
+                    first.dirty,
+                    delete_branch=delete_branch,
+                    force=True,
+                    on_progress=_force_progress,
+                )
+            else:
+                dirty_skipped = len(first.dirty)
+
+        # Only clear IDs that were in our original snapshot, so any marks
+        # added for new worktrees during the run survive.
+        to_clear = [
+            wid
+            for wid in (*first.succeeded, *force_result.succeeded)
+            if wid in snapshot_ids
+        ]
+        self._selection_cache.clear_succeeded(to_clear)
+
+        await self._refresh_current_repo_worktrees()
+
+        succeeded = len(first.succeeded) + len(force_result.succeeded)
+        failed = len(first.failed) + len(force_result.failed)
+        if failed == 0 and dirty_skipped == 0:
+            status.update_status("")
+        else:
+            status.update_status(
+                f"Deleted {succeeded}, failed {failed}, dirty-skipped {dirty_skipped}"
             )
-            worktree_panel.set_worktrees(entries)
+
+    async def _refresh_current_repo_worktrees(self) -> None:
+        if not self._selected_repo:
+            return
+        try:
+            worktrees = await git.list_worktrees(self._selected_repo.path)
+            self._metadata.reconcile(worktrees, repo_name=self._selected_repo.name)
+        except Exception:
+            pass
+        entries = await self._service.list_worktrees(
+            repo_name=self._selected_repo.name
+        )
+        # Drop cache entries for worktrees that no longer exist in this repo
+        # (e.g., deleted out-of-band), so the status bar count stays accurate.
+        self._selection_cache.prune_for_repo(
+            self._selected_repo.name, [e.id for e in entries]
+        )
+        worktree_panel = self.query_one(WorktreePanel)
+        worktree_panel.set_worktrees(entries)
 
     @work
     async def action_open_worktree(self) -> None:
@@ -381,7 +494,7 @@ class GWTApp(App):
         if previous_repo:
             repo_panel.select_by_name(previous_repo.name)
 
-        status.update_status(f"Ready | {len(self._repos)} repos")
+        status.update_status("")
 
     @work
     async def action_yank(self) -> None:
