@@ -48,7 +48,7 @@ class WorktreePanel(Static):
         self._empty_label = Label("No worktrees. Press [c] to create one.")
         yield self._empty_label
         self._table = DataTable(cursor_type="row")
-        self._table.add_columns(" ", "Branch", "Issue", "Type")
+        self._table.add_columns(" ", "Branch", "Issue", "Type", "Base")
         self._table.display = False
         yield self._table
 
@@ -189,6 +189,7 @@ class WorktreePanel(Static):
                 Text(entry.branch, style=style),
                 Text(entry.issue_id or "-", style=style),
                 Text(entry.work_type or "-", style=style),
+                Text(entry.source_branch or "-", style=style),
                 key=entry.id,
             )
 

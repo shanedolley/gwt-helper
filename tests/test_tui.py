@@ -13,7 +13,10 @@ from gwt_worktree_manager.widgets.dialogs import (
 )
 from gwt_worktree_manager.widgets.repo_panel import RepoPanel
 from gwt_worktree_manager.widgets.status_bar import GWTStatusBar
-from gwt_worktree_manager.widgets.worktree_panel import WorktreePanel
+from gwt_worktree_manager.widgets.worktree_panel import (
+    MARKED_ROW_STYLE,
+    WorktreePanel,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +297,135 @@ class TestWorktreePanelMarking:
             assert str(marker_cell).strip() == ""
 
 
+class TestWorktreePanelBaseColumn:
+    @pytest.mark.asyncio
+    async def test_column_headers_in_expected_order(self):
+        """The DataTable exposes the marker, branch, issue, type, and base columns in that order."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            await pilot.pause()
+            headers = [col.label.plain for col in wt_panel._table.columns.values()]
+            assert headers == [" ", "Branch", "Issue", "Type", "Base"]
+
+    @pytest.mark.asyncio
+    async def test_base_cell_renders_source_branch(self):
+        """A populated source_branch renders verbatim in the Base column."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            wt_panel.set_worktrees([_make_entry(id="a", source_branch="main")])
+            await pilot.pause()
+            cell = wt_panel._table.get_cell_at((0, 4))
+            assert cell.plain == "main"
+
+    @pytest.mark.asyncio
+    async def test_base_cell_renders_dash_for_empty_string(self):
+        """An empty source_branch renders as the '-' placeholder."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            wt_panel.set_worktrees([_make_entry(id="a", source_branch="")])
+            await pilot.pause()
+            cell = wt_panel._table.get_cell_at((0, 4))
+            assert cell.plain == "-"
+
+    @pytest.mark.asyncio
+    async def test_base_cell_renders_dash_for_none(self):
+        """A None source_branch renders as the '-' placeholder via the runtime guard."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            entry = _make_entry(id="a")
+            # Runtime-only check: type is str="", but the `or "-"` guard must
+            # also tolerate None reaching the cell.
+            entry.source_branch = None  # type: ignore[assignment]
+            wt_panel.set_worktrees([entry])
+            await pilot.pause()
+            cell = wt_panel._table.get_cell_at((0, 4))
+            assert cell.plain == "-"
+
+    @pytest.mark.asyncio
+    async def test_base_cell_distinct_values_per_row(self):
+        """Two rows render their respective source_branch values; guards off-by-one."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            wt_panel.set_worktrees([
+                _make_entry(
+                    id="a",
+                    branch="feature/a",
+                    source_branch="main",
+                    last_accessed="2026-04-01T00:00:00Z",
+                ),
+                _make_entry(
+                    id="b",
+                    branch="feature/b",
+                    source_branch="develop",
+                    last_accessed="2026-03-01T00:00:00Z",
+                ),
+            ])
+            await pilot.pause()
+            assert wt_panel._table.get_cell_at((0, 4)).plain == "main"
+            assert wt_panel._table.get_cell_at((1, 4)).plain == "develop"
+
+    @pytest.mark.asyncio
+    async def test_base_cell_preserves_whitespace(self):
+        """source_branch values are rendered verbatim, without stripping."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            wt_panel.set_worktrees([_make_entry(id="a", source_branch="  main  ")])
+            await pilot.pause()
+            cell = wt_panel._table.get_cell_at((0, 4))
+            assert cell.plain == "  main  "
+
+    @pytest.mark.asyncio
+    async def test_base_cell_marked_row_styled(self):
+        """Marked rows render the Base cell in the marked-row style."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            cache = pilot.app._selection_cache
+            entry = _make_entry(id="a", source_branch="main")
+            cache.toggle(entry)
+            wt_panel.set_worktrees([entry])
+            await pilot.pause()
+            cell = wt_panel._table.get_cell_at((0, 4))
+            assert str(cell.style) == MARKED_ROW_STYLE
+
+    @pytest.mark.asyncio
+    async def test_base_cell_unmarked_row_unstyled(self):
+        """Unmarked rows render the Base cell with no marked-row style."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            wt_panel.set_worktrees([_make_entry(id="a", source_branch="main")])
+            await pilot.pause()
+            cell = wt_panel._table.get_cell_at((0, 4))
+            assert str(cell.style) == ""
+
+    @pytest.mark.asyncio
+    async def test_base_cell_marked_under_filter(self):
+        """A marked row that survives a filter retains the marked-row style on Base."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            cache = pilot.app._selection_cache
+            keep = _make_entry(id="keep", branch="feature/keep", source_branch="main")
+            drop = _make_entry(id="drop", branch="feature/drop", source_branch="develop")
+            cache.toggle(keep)
+            wt_panel.set_worktrees([keep, drop])
+            wt_panel._filter_text = "keep"
+            wt_panel._rebuild_table()
+            await pilot.pause()
+            assert wt_panel._table.row_count == 1
+            assert wt_panel._table.get_cell_at((0, 1)).plain == "feature/keep"
+            assert str(wt_panel._table.get_cell_at((0, 4)).style) == MARKED_ROW_STYLE
+
+    @pytest.mark.asyncio
+    async def test_base_cell_updates_on_refresh(self):
+        """Re-calling set_worktrees with a changed source_branch updates the cell."""
+        async with GWTApp().run_test() as pilot:
+            wt_panel = pilot.app.query_one(WorktreePanel)
+            wt_panel.set_worktrees([_make_entry(id="a", source_branch="main")])
+            await pilot.pause()
+            assert wt_panel._table.get_cell_at((0, 4)).plain == "main"
+            wt_panel.set_worktrees([_make_entry(id="a", source_branch="develop")])
+            await pilot.pause()
+            assert wt_panel._table.get_cell_at((0, 4)).plain == "develop"
+
 # ---------------------------------------------------------------------------
 # DetailPanel
 # ---------------------------------------------------------------------------
@@ -312,7 +444,7 @@ class TestDetailPanel:
 
     @pytest.mark.asyncio
     async def test_shows_worktree_info(self):
-        """set_worktree displays entry fields."""
+        """set_worktree displays entry fields with explicit per-line assertions."""
         async with GWTApp().run_test() as pilot:
             detail = pilot.app.query_one(DetailPanel)
             entry = _make_entry()
@@ -321,7 +453,30 @@ class TestDetailPanel:
             text = str(detail._content.content)
             assert "TB-123" in text
             assert "feature" in text
-            assert "myapp" in text or "main" in text
+            assert f"Branch: {entry.branch}" in text
+            assert f"Base: {entry.source_branch}" in text
+
+    @pytest.mark.asyncio
+    async def test_uses_base_label_not_source(self):
+        """The detail panel labels the base branch line `Base:`, not `Source:`."""
+        async with GWTApp().run_test() as pilot:
+            detail = pilot.app.query_one(DetailPanel)
+            detail.set_worktree(_make_entry(source_branch="main"))
+            await pilot.pause()
+            text = str(detail._content.content)
+            assert "Base: main" in text
+            assert "Source:" not in text
+
+    @pytest.mark.asyncio
+    async def test_base_placeholder_is_dash_for_empty(self):
+        """An empty source_branch renders as `Base: -` and never as `unknown`."""
+        async with GWTApp().run_test() as pilot:
+            detail = pilot.app.query_one(DetailPanel)
+            detail.set_worktree(_make_entry(source_branch=""))
+            await pilot.pause()
+            text = str(detail._content.content)
+            assert "Base: -" in text
+            assert "unknown" not in text
 
     @pytest.mark.asyncio
     async def test_shows_tags(self):
