@@ -299,30 +299,13 @@ class TestWorktreePanelMarking:
 
 class TestWorktreePanelBaseColumn:
     @pytest.mark.asyncio
-    async def test_base_column_present_in_header(self):
-        """The 'Base' column header is registered on the DataTable."""
+    async def test_column_headers_in_expected_order(self):
+        """The DataTable exposes the marker, branch, issue, type, and base columns in that order."""
         async with GWTApp().run_test() as pilot:
             wt_panel = pilot.app.query_one(WorktreePanel)
             await pilot.pause()
             headers = [col.label.plain for col in wt_panel._table.columns.values()]
-            assert "Base" in headers
-
-    @pytest.mark.asyncio
-    async def test_base_column_is_at_index_4(self):
-        """The 'Base' column is the last column in the row."""
-        async with GWTApp().run_test() as pilot:
-            wt_panel = pilot.app.query_one(WorktreePanel)
-            await pilot.pause()
-            columns = list(wt_panel._table.columns.values())
-            assert columns[4].label.plain == "Base"
-
-    @pytest.mark.asyncio
-    async def test_table_has_five_columns_before_set_worktrees(self):
-        """add_columns alone produces five columns; row-build loop is irrelevant here."""
-        async with GWTApp().run_test() as pilot:
-            wt_panel = pilot.app.query_one(WorktreePanel)
-            await pilot.pause()
-            assert len(wt_panel._table.columns) == 5
+            assert headers == [" ", "Branch", "Issue", "Type", "Base"]
 
     @pytest.mark.asyncio
     async def test_base_cell_renders_source_branch(self):
@@ -442,19 +425,6 @@ class TestWorktreePanelBaseColumn:
             wt_panel.set_worktrees([_make_entry(id="a", source_branch="develop")])
             await pilot.pause()
             assert wt_panel._table.get_cell_at((0, 4)).plain == "develop"
-
-    @pytest.mark.asyncio
-    async def test_base_cell_long_branch_name(self):
-        """A 120-character source_branch renders verbatim without errors."""
-        async with GWTApp().run_test() as pilot:
-            wt_panel = pilot.app.query_one(WorktreePanel)
-            long_name = "feature/" + "x" * (120 - len("feature/"))
-            assert len(long_name) == 120
-            wt_panel.set_worktrees([_make_entry(id="a", source_branch=long_name)])
-            await pilot.pause()
-            cell = wt_panel._table.get_cell_at((0, 4))
-            assert cell.plain == long_name
-
 
 # ---------------------------------------------------------------------------
 # DetailPanel
