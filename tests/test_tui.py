@@ -474,7 +474,7 @@ class TestDetailPanel:
 
     @pytest.mark.asyncio
     async def test_shows_worktree_info(self):
-        """set_worktree displays entry fields."""
+        """set_worktree displays entry fields with explicit per-line assertions."""
         async with GWTApp().run_test() as pilot:
             detail = pilot.app.query_one(DetailPanel)
             entry = _make_entry()
@@ -483,7 +483,30 @@ class TestDetailPanel:
             text = str(detail._content.content)
             assert "TB-123" in text
             assert "feature" in text
-            assert "myapp" in text or "main" in text
+            assert f"Branch: {entry.branch}" in text
+            assert f"Base: {entry.source_branch}" in text
+
+    @pytest.mark.asyncio
+    async def test_uses_base_label_not_source(self):
+        """The detail panel labels the base branch line `Base:`, not `Source:`."""
+        async with GWTApp().run_test() as pilot:
+            detail = pilot.app.query_one(DetailPanel)
+            detail.set_worktree(_make_entry(source_branch="main"))
+            await pilot.pause()
+            text = str(detail._content.content)
+            assert "Base: main" in text
+            assert "Source:" not in text
+
+    @pytest.mark.asyncio
+    async def test_base_placeholder_is_dash_for_empty(self):
+        """An empty source_branch renders as `Base: -` and never as `unknown`."""
+        async with GWTApp().run_test() as pilot:
+            detail = pilot.app.query_one(DetailPanel)
+            detail.set_worktree(_make_entry(source_branch=""))
+            await pilot.pause()
+            text = str(detail._content.content)
+            assert "Base: -" in text
+            assert "unknown" not in text
 
     @pytest.mark.asyncio
     async def test_shows_tags(self):

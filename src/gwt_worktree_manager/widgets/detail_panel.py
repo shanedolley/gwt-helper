@@ -31,7 +31,7 @@ class DetailPanel(Static):
         )
         lines = [
             f"Branch: {entry.branch}",
-            f"Source: {entry.source_branch or 'unknown'}",
+            f"Base: {entry.source_branch or '-'}",
             f"Path: {entry.path}",
             f"Issue: {entry.issue_id or 'none'}",
             f"Tracker: {tracker_label}",
