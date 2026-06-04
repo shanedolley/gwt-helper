@@ -10,6 +10,7 @@ from gwt_worktree_manager.widgets.dialogs import (
     BulkForceDeleteDialog,
     CreateDialog,
     DeleteDialog,
+    DialogButton,
 )
 from gwt_worktree_manager.widgets.repo_panel import RepoPanel
 from gwt_worktree_manager.widgets.status_bar import GWTStatusBar
@@ -40,6 +41,13 @@ def _make_entry(**overrides) -> WorktreeEntry:
     }
     defaults.update(overrides)
     return WorktreeEntry(**defaults)
+
+
+class _FakeSubmitted:
+    """Minimal stand-in for Input.Submitted, carrying only the input id."""
+
+    def __init__(self, input_id: str) -> None:
+        self.input = type("_FakeInput", (), {"id": input_id})()
 
 
 # ---------------------------------------------------------------------------
@@ -608,6 +616,58 @@ class TestCreateDialog:
         entry = _make_entry()
         dialog = DeleteDialog(entry)
         assert dialog is not None
+
+
+class TestDialogButton:
+    """Space activates dialog buttons, and Enter activates the matching input."""
+
+    def test_dialog_button_binds_space(self):
+        """DialogButton presses on Space in addition to the inherited Enter."""
+        keys = set(DialogButton("ok")._bindings.key_to_bindings)
+        assert "space" in keys
+        assert "enter" in keys
+
+    @pytest.mark.asyncio
+    async def test_space_activates_focused_button(self):
+        """Pressing Space on a focused dialog button activates it."""
+        from gwt_worktree_manager.config.manager import Config
+
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            dialog = CreateDialog(repos=[], config=Config())
+            app.push_screen(dialog)
+            await pilot.pause()
+            dialog.query_one("#btn-cancel", DialogButton).focus()
+            await pilot.pause()
+            await pilot.press("space")
+            await pilot.pause()
+            assert app.screen is not dialog
+
+    def test_enter_in_pr_input_runs_search(self):
+        """Enter in the PR input dispatches the search worker."""
+        from gwt_worktree_manager.config.manager import Config
+
+        dialog = CreateDialog(repos=[], config=Config())
+        captured = {}
+        dialog.run_worker = lambda work, *a, **k: captured.setdefault("work", work)
+        dialog._search_pr = lambda: "search-coro"
+
+        dialog.on_input_submitted(_FakeSubmitted("pr-input"))
+
+        assert captured["work"] == "search-coro"
+
+    def test_enter_in_text_inputs_submits(self):
+        """Enter in the issue or description input submits the form."""
+        from gwt_worktree_manager.config.manager import Config
+
+        for input_id in ("issue-input", "desc-input"):
+            dialog = CreateDialog(repos=[], config=Config())
+            submitted = []
+            dialog._submit = lambda: submitted.append(True)
+
+            dialog.on_input_submitted(_FakeSubmitted(input_id))
+
+            assert submitted == [True]
 
 
 class TestDispatchFork:

@@ -20,6 +20,14 @@ from gwt_worktree_manager.git import operations as git
 from gwt_worktree_manager.services.worktree import VALID_WORK_TYPES, to_kebab_case
 from gwt_worktree_manager.store.metadata import WorktreeEntry
 
+class DialogButton(Button):
+    """Button that also activates on Space, not just Enter."""
+
+    BINDINGS = [
+        Binding("space", "press", "Press button", show=False),
+    ]
+
+
 DIALOG_BUTTON_CSS = """
     .dialog-buttons {
         height: auto;
@@ -106,7 +114,7 @@ class CreateDialog(ModalScreen):
             yield Label("PR Number:", id="pr-label")
             with Horizontal(id="pr-row"):
                 yield Input(placeholder="e.g., 1234 or full PR URL", id="pr-input")
-                yield Button("Search", variant="primary", id="btn-search")
+                yield DialogButton("Search", variant="primary", id="btn-search")
             yield Label("", id="pr-branch-label")
             yield Label("Issue Tracker:", id="tracker-label")
             yield Select(
@@ -128,12 +136,19 @@ class CreateDialog(ModalScreen):
             )
             yield Label("", id="preview-label")
             with Horizontal(classes="dialog-buttons"):
-                yield Button("Cancel", variant="default", id="btn-cancel")
-                yield Button("Create", variant="primary", id="btn-create")
+                yield DialogButton("Cancel", variant="default", id="btn-cancel")
+                yield DialogButton("Create", variant="primary", id="btn-create")
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Update the branch preview when input changes."""
         self._update_preview()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Activate the matching action when Enter is pressed in an input."""
+        if event.input.id == "pr-input":
+            self.run_worker(self._search_pr())
+        elif event.input.id in ("issue-input", "desc-input"):
+            self._submit()
 
     async def on_mount(self) -> None:
         """Load branches if a default repo is set. Hide PR field initially."""
@@ -409,8 +424,8 @@ class DeleteDialog(ModalScreen):
                 yield RadioButton("Yes", value=True)
                 yield RadioButton("No")
             with Horizontal(classes="dialog-buttons"):
-                yield Button("Cancel", variant="default", id="btn-cancel")
-                yield Button("Delete", variant="error", id="btn-delete")
+                yield DialogButton("Cancel", variant="default", id="btn-cancel")
+                yield DialogButton("Delete", variant="error", id="btn-delete")
 
     def action_cancel(self) -> None:
         """Cancel the dialog."""
@@ -471,8 +486,8 @@ class BulkDeleteDialog(ModalScreen):
             yield Label("")
             yield Label("Press x to unmark the highlighted row.", classes="hint")
             with Horizontal(classes="dialog-buttons"):
-                yield Button("Cancel", variant="default", id="btn-bulk-cancel")
-                yield Button("Delete", variant="error", id="btn-bulk-confirm")
+                yield DialogButton("Cancel", variant="default", id="btn-bulk-cancel")
+                yield DialogButton("Delete", variant="error", id="btn-bulk-confirm")
 
     async def on_mount(self) -> None:
         self._populate_table()
@@ -570,8 +585,8 @@ class BulkForceDeleteDialog(ModalScreen):
             yield table
             yield Label("")
             with Horizontal(classes="dialog-buttons"):
-                yield Button("Skip", variant="default", id="btn-force-skip")
-                yield Button("Force All", variant="error", id="btn-force-all")
+                yield DialogButton("Skip", variant="default", id="btn-force-skip")
+                yield DialogButton("Force All", variant="error", id="btn-force-all")
 
     def action_skip(self) -> None:
         self.dismiss(False)
@@ -616,8 +631,8 @@ class ForceDeleteDialog(ModalScreen):
             yield Label(self._message)
             yield Label("")
             with Horizontal(classes="dialog-buttons"):
-                yield Button("Cancel", variant="default", id="btn-cancel")
-                yield Button("Force Delete", variant="error", id="btn-force")
+                yield DialogButton("Cancel", variant="default", id="btn-cancel")
+                yield DialogButton("Force Delete", variant="error", id="btn-force")
 
     def action_cancel(self) -> None:
         self.dismiss(False)
