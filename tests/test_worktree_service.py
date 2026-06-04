@@ -343,6 +343,62 @@ class TestWorktreeServiceIntegration:
             await svc.switch_branch(entry.id, "nonexistent-branch")
 
     @pytest.mark.asyncio
+    async def test_duplicate_branch_local(self, worktree_env):
+        svc = worktree_env["service"]
+        subprocess.run(
+            ["git", "-C", str(worktree_env["repo_path"]), "branch", "feature/dup"],
+            check=True,
+            capture_output=True,
+        )
+        entry = await svc.create_branch_worktree(
+            repo_name=worktree_env["repo_name"],
+            branch="feature/dup",
+        )
+        assert entry.branch == "feature/dup"
+        assert entry.work_type == "duplicate"
+        assert entry.issue_id == ""
+        assert entry.source_branch == ""
+        assert Path(entry.path).exists()
+        # Slashes nest as subdirectories under the repo folder.
+        assert Path(entry.path).parent.name == "feature"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_branch_already_checked_out_raises(self, worktree_env):
+        svc = worktree_env["service"]
+        subprocess.run(
+            ["git", "-C", str(worktree_env["repo_path"]), "branch", "shared"],
+            check=True,
+            capture_output=True,
+        )
+        await svc.create_branch_worktree(
+            repo_name=worktree_env["repo_name"],
+            branch="shared",
+        )
+        with pytest.raises(BranchCheckedOutError):
+            await svc.create_branch_worktree(
+                repo_name=worktree_env["repo_name"],
+                branch="shared",
+            )
+
+    @pytest.mark.asyncio
+    async def test_duplicate_branch_not_found_raises(self, worktree_env):
+        svc = worktree_env["service"]
+        with pytest.raises(InvalidInputError, match="not found"):
+            await svc.create_branch_worktree(
+                repo_name=worktree_env["repo_name"],
+                branch="nonexistent-branch",
+            )
+
+    @pytest.mark.asyncio
+    async def test_duplicate_branch_rejects_path_escape(self, worktree_env):
+        svc = worktree_env["service"]
+        with pytest.raises(InvalidInputError):
+            await svc.create_branch_worktree(
+                repo_name=worktree_env["repo_name"],
+                branch="../escape",
+            )
+
+    @pytest.mark.asyncio
     async def test_create_with_invalid_source_branch(self, worktree_env):
         svc = worktree_env["service"]
         with pytest.raises(InvalidInputError, match="not found"):

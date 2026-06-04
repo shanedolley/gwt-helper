@@ -244,6 +244,11 @@ class GWTApp(App):
                         repo_name=result["repo_name"],
                         pr_number=result["pr_number"],
                     )
+                elif result.get("work_type") == "duplicate":
+                    entry = await self._service.create_branch_worktree(
+                        repo_name=result["repo_name"],
+                        branch=result["branch"],
+                    )
                 else:
                     entry = await self._service.create_worktree(**result)
                 status.update_status("Running hooks...")

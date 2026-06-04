@@ -135,6 +135,7 @@ When creating a worktree, choose a work type that determines the branch name pre
 | `refactor` | `refactor/TB-100-simplify-auth` |
 | `hotfix` | `hotfix/5001-critical-fix` |
 | `pr-review` | Opens PR branch in a review worktree |
+| `duplicate` | Checks out an existing branch in a worktree named after it |
 
 ### PR Review Workflow
 
@@ -145,6 +146,15 @@ Select `pr-review` as the work type to review a pull request:
 3. Click **Create** to check out the PR branch in a new worktree at `worktrees/<repo>/pr-review/<PR#>`
 
 The PR branch is fetched and checked out as-is (no new branch created).
+
+### Duplicate Branch Workflow
+
+Select `duplicate` as the work type to check out an existing branch:
+
+1. Pick a local or remote branch from the dropdown
+2. Click **Create** to check it out in a new worktree at `worktrees/<repo>/<branch>`
+
+The branch is checked out as-is, with no new branch created. Slashes in the branch name nest as subdirectories. Remote-only branches are fetched first. A branch already checked out in another worktree cannot be duplicated, since Git allows each branch in one worktree at a time.
 
 ## Terminal Support
 

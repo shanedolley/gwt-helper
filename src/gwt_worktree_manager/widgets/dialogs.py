@@ -134,6 +134,13 @@ class CreateDialog(ModalScreen):
                 prompt="Select repo first",
                 allow_blank=True,
             )
+            yield Label("Branch:", id="dup-label")
+            yield Select(
+                [],
+                id="dup-select",
+                prompt="Select repo first",
+                allow_blank=True,
+            )
             yield Label("", id="preview-label")
             with Horizontal(classes="dialog-buttons"):
                 yield DialogButton("Cancel", variant="default", id="btn-cancel")
@@ -151,8 +158,8 @@ class CreateDialog(ModalScreen):
             self._submit()
 
     async def on_mount(self) -> None:
-        """Load branches if a default repo is set. Hide PR field initially."""
-        self._set_pr_review_mode(False)
+        """Load branches if a default repo is set. Show normal fields initially."""
+        self._set_mode(None)
         if self._default_repo:
             self.query_one("#repo-select", Select).value = self._default_repo
             await self._load_branches(self._default_repo)
@@ -163,22 +170,30 @@ class CreateDialog(ModalScreen):
         if event.select.id == "repo-select" and event.value is not Select.BLANK:
             self.run_worker(self._load_branches(event.value))
         if event.select.id == "type-select":
-            is_pr = event.value == "pr-review"
-            self._set_pr_review_mode(is_pr)
+            self._set_mode(event.value)
 
-    def _set_pr_review_mode(self, enabled: bool) -> None:
-        """Toggle between PR review fields and normal fields."""
-        pr_widgets = ["#pr-label", "#pr-row", "#pr-branch-label"]
-        normal_widgets = [
-            "#tracker-label", "#tracker-select",
-            "#issue-label", "#issue-input",
-            "#desc-label", "#desc-input",
-            "#source-label", "#source-select",
-        ]
-        for sel in pr_widgets:
-            self.query_one(sel).display = enabled
-        for sel in normal_widgets:
-            self.query_one(sel).display = not enabled
+    def _set_mode(self, work_type) -> None:
+        """Show the field group that matches the selected work type."""
+        is_pr = work_type == "pr-review"
+        is_dup = work_type == "duplicate"
+        is_normal = not is_pr and not is_dup
+        groups = {
+            "#pr-label": is_pr,
+            "#pr-row": is_pr,
+            "#pr-branch-label": is_pr,
+            "#dup-label": is_dup,
+            "#dup-select": is_dup,
+            "#tracker-label": is_normal,
+            "#tracker-select": is_normal,
+            "#issue-label": is_normal,
+            "#issue-input": is_normal,
+            "#desc-label": is_normal,
+            "#desc-input": is_normal,
+            "#source-label": is_normal,
+            "#source-select": is_normal,
+        }
+        for sel, visible in groups.items():
+            self.query_one(sel).display = visible
 
     async def _load_branches(self, repo_name: str) -> None:
         """Fetch remote branches for a repo and populate the source branch dropdown."""
@@ -199,12 +214,14 @@ class CreateDialog(ModalScreen):
             clean.sort()
             options = [(b, b) for b in clean]
             source_select.set_options(options)
+            self.query_one("#dup-select", Select).set_options(options)
             # Pre-select the default source branch if it exists
             default = self._config.get_repo_config(repo_name).source_branch or self._config.default_source_branch
             if default in seen:
                 source_select.value = default
         except Exception:
             source_select.set_options([])
+            self.query_one("#dup-select", Select).set_options([])
 
     async def _search_pr(self) -> None:
         """Look up the PR branch name from GitHub."""
@@ -263,6 +280,15 @@ class CreateDialog(ModalScreen):
         try:
             type_select = self.query_one("#type-select", Select)
             work_type = type_select.value
+            if work_type == "duplicate":
+                branch = self.query_one("#dup-select", Select).value
+                if branch is not Select.NULL and branch:
+                    self.query_one("#preview-label", Label).update(
+                        f"Preview: {branch}"
+                    )
+                else:
+                    self.query_one("#preview-label", Label).update("")
+                return
             if work_type == "pr-review":
                 pr_num = self._extract_pr_number(
                     self.query_one("#pr-input", Input).value
@@ -319,6 +345,22 @@ class CreateDialog(ModalScreen):
             return
         if work_type is Select.NULL or not work_type:
             self.notify("Please select a work type", severity="error")
+            return
+
+        # Duplicate has a different submission path
+        if work_type == "duplicate":
+            branch_select = self.query_one("#dup-select", Select)
+            branch = branch_select.value
+            if branch is Select.BLANK or not branch:
+                self.notify("Please select a branch to duplicate", severity="error")
+                return
+            self.dismiss(
+                {
+                    "repo_name": repo,
+                    "work_type": "duplicate",
+                    "branch": branch,
+                }
+            )
             return
 
         # PR review has a different submission path
