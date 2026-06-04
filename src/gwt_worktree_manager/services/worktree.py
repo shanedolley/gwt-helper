@@ -76,7 +76,7 @@ class BulkDeleteResult:
 # Helper functions
 # ==============================================================================
 
-VALID_WORK_TYPES = {"feature", "bug", "chore", "doc", "refactor", "hotfix", "task", "pr-review"}
+VALID_WORK_TYPES = {"feature", "bug", "chore", "doc", "refactor", "hotfix", "task", "pr-review", "duplicate"}
 
 
 def to_kebab_case(text: str) -> str:
@@ -285,6 +285,85 @@ class WorktreeService:
             issue_tracker="",
             issue_url="",
             work_type="pr-review",
+            source_branch="",
+            created_at=now,
+            last_accessed=now,
+            tags=[],
+        )
+        self._metadata.create(entry)
+        return entry
+
+    async def create_branch_worktree(
+        self,
+        repo_name: str,
+        branch: str,
+    ) -> WorktreeEntry:
+        """Check out an existing branch in a worktree named after the branch.
+
+        Unlike create_worktree, this creates no new branch: it checks out the
+        given local or remote branch as-is. The worktree folder mirrors the
+        branch name, so slashes nest as subdirectories.
+        """
+        branch = branch.strip()
+        if not branch:
+            raise InvalidInputError("Branch name cannot be empty")
+        if ".." in branch:
+            raise InvalidInputError("Branch name cannot contain '..'")
+        git.validate_branch_name(branch)
+
+        repo_path = await self._resolve_repo(repo_name)
+
+        # Fetch when the branch exists only on the remote so Git's checkout
+        # can create the local tracking branch.
+        local = await git.branch_exists(repo_path, branch, check_remote=False)
+        if not local:
+            if not await git.branch_exists(repo_path, branch, check_remote=True):
+                raise InvalidInputError(
+                    f"Branch '{branch}' not found in {repo_name}"
+                )
+            await git.fetch_branch(repo_path, branch)
+
+        # A branch can be checked out in only one worktree at a time.
+        for wt in await git.list_worktrees(repo_path):
+            if wt.branch == branch:
+                raise BranchCheckedOutError(
+                    f"Branch '{branch}' is already checked out in worktree "
+                    f"at {wt.path}"
+                )
+
+        worktrees_dir = self._config.resolve_worktrees_dir()
+        worktree_path = worktrees_dir / repo_name / branch
+        try:
+            worktree_path.resolve().relative_to(worktrees_dir.resolve())
+        except ValueError:
+            raise InvalidInputError(
+                "Worktree path would escape the configured worktrees directory"
+            )
+        if worktree_path.exists():
+            raise InvalidInputError(
+                f"A worktree already exists at {worktree_path}"
+            )
+
+        try:
+            await git.create_worktree_existing_branch(
+                repo_path, branch, worktree_path
+            )
+        except (git.GitError, KeyboardInterrupt):
+            await git.prune_worktrees(repo_path)
+            if worktree_path.exists():
+                shutil.rmtree(worktree_path, ignore_errors=True)
+            raise
+
+        now = datetime.now(timezone.utc).isoformat()
+        entry = WorktreeEntry(
+            id=str(uuid.uuid4()),
+            repo_name=repo_name,
+            branch=branch,
+            path=str(worktree_path),
+            issue_id="",
+            issue_tracker="",
+            issue_url="",
+            work_type="duplicate",
             source_branch="",
             created_at=now,
             last_accessed=now,

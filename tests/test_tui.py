@@ -617,6 +617,55 @@ class TestCreateDialog:
         dialog = DeleteDialog(entry)
         assert dialog is not None
 
+    @pytest.mark.asyncio
+    async def test_duplicate_mode_shows_branch_picker(self):
+        """Selecting 'duplicate' reveals the branch picker and hides other fields."""
+        from textual.widgets import Select
+        from gwt_worktree_manager.config.manager import Config
+
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            dialog = CreateDialog(repos=[], config=Config())
+            app.push_screen(dialog)
+            await pilot.pause()
+            dialog.query_one("#type-select", Select).value = "duplicate"
+            await pilot.pause()
+
+            assert dialog.query_one("#dup-label").display is True
+            assert dialog.query_one("#dup-select").display is True
+            assert dialog.query_one("#pr-row").display is False
+            assert dialog.query_one("#desc-input").display is False
+            assert dialog.query_one("#source-select").display is False
+
+    @pytest.mark.asyncio
+    async def test_duplicate_submit_returns_branch(self):
+        """Submitting in duplicate mode dismisses with the selected branch."""
+        from textual.widgets import Select
+        from gwt_worktree_manager.config.manager import Config
+
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            dialog = CreateDialog(repos=[], config=Config())
+            app.push_screen(dialog)
+            await pilot.pause()
+            dialog.query_one("#repo-select", Select).set_options([("repo", "repo")])
+            dialog.query_one("#repo-select", Select).value = "repo"
+            dialog.query_one("#type-select", Select).value = "duplicate"
+            dup = dialog.query_one("#dup-select", Select)
+            dup.set_options([("feature/x", "feature/x")])
+            dup.value = "feature/x"
+            await pilot.pause()
+
+            captured = {}
+            dialog.dismiss = lambda result: captured.setdefault("result", result)
+            dialog._submit()
+
+            assert captured["result"] == {
+                "repo_name": "repo",
+                "work_type": "duplicate",
+                "branch": "feature/x",
+            }
+
 
 class TestDialogButton:
     """Space activates dialog buttons, and Enter activates the matching input."""
