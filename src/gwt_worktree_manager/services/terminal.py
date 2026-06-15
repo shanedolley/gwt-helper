@@ -96,6 +96,9 @@ class TerminalOpener:
                  "--tab", first_surface, "--workspace", ws_ref],
             )
 
+        # Bring the new workspace to the foreground
+        self._run_silent(["cmux", "select-workspace", "--workspace", ws_ref])
+
     # ── tmux ─────────────────────────────────────────────────────────────
 
     def _open_tmux(self, branch: str, path: str) -> str:
