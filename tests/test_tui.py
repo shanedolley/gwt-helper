@@ -1095,7 +1095,7 @@ class TestBulkOpen:
             assert app._selection_cache.contains("a") is False
             assert app._selection_cache.contains("b") is True
             # The failing entry never reached the opener.
-            assert ("feature/b", "/tmp/test") not in opener.calls
+            assert all(branch != "feature/b" for branch, _ in opener.calls)
 
     @pytest.mark.asyncio
     async def test_snapshot_guard_keeps_marks_added_mid_run(self):

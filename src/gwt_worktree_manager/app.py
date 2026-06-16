@@ -5,6 +5,7 @@ import platform
 import shutil
 import subprocess
 import webbrowser
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -439,7 +440,9 @@ class GWTApp(App):
         finally:
             self._open_in_progress = False
 
-    async def _run_bulk(self, open_one) -> None:
+    async def _run_bulk(
+        self, open_one: Callable[[WorktreeEntry], Awaitable[bool]]
+    ) -> None:
         """Open every marked worktree in reverse resolved order.
 
         ``open_one(entry)`` is an async callable that opens one worktree and
@@ -459,7 +462,11 @@ class GWTApp(App):
             try:
                 if await open_one(entry):
                     succeeded.append(entry.id)
-            except Exception:
+            except Exception as exc:
+                # One worktree failing must not abort the batch; the failure
+                # surfaces in the summary count. Log so unexpected errors are
+                # not invisible.
+                self.log.warning(f"Bulk open failed for {entry.branch}: {exc!r}")
                 continue
 
         self._selection_cache.clear_succeeded(
@@ -472,17 +479,22 @@ class GWTApp(App):
         else:
             status.update_status(f"Opened {len(succeeded)}")
 
+    async def _open_worktree_entry(self, entry: WorktreeEntry) -> bool:
+        """Open one worktree in the configured terminal. Returns success.
+
+        The ``open_worktree`` result is intentionally discarded, matching the
+        single-open path (`_open_worktree_in_terminal`); the terminal opener
+        performs the actual open.
+        """
+        await self._service.open_worktree(entry.id)
+        await asyncio.to_thread(
+            self._terminal_opener.open, entry.branch, entry.path
+        )
+        return True
+
     async def _run_bulk_open(self) -> None:
         """Open every marked worktree in its own terminal workspace."""
-
-        async def _open_one(entry: WorktreeEntry) -> bool:
-            await self._service.open_worktree(entry.id)
-            await asyncio.to_thread(
-                self._terminal_opener.open, entry.branch, entry.path
-            )
-            return True
-
-        await self._run_bulk(_open_one)
+        await self._run_bulk(self._open_worktree_entry)
 
     async def _open_worktree_in_terminal(self, entry: WorktreeEntry) -> None:
         """Open a worktree entry using the configured terminal/multiplexer."""
