@@ -924,3 +924,285 @@ class TestDispatchFork:
 
             assert app._selection_cache.contains("a") is False
             assert app._selection_cache.contains("b") is True
+
+
+# ---------------------------------------------------------------------------
+# Bulk open (ctrl+o)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingOpener:
+    """Stand-in for TerminalOpener that records open() calls in order."""
+
+    def __init__(self, fail_branches=None):
+        self.calls: list[tuple[str, str]] = []
+        self._fail = set(fail_branches or [])
+
+    def open(self, branch: str, path: str) -> str:
+        self.calls.append((branch, path))
+        if branch in self._fail:
+            raise RuntimeError(f"boom: {branch}")
+        return f"Opened: {branch}"
+
+
+def _async_noop():
+    async def _f(worktree_id):
+        return None
+
+    return _f
+
+
+async def _drain(pilot, predicate, *, tries: int = 40):
+    """Pump the event loop until predicate() is true or tries run out."""
+    for _ in range(tries):
+        await pilot.pause()
+        if predicate():
+            return
+
+
+class TestBulkOpen:
+    @pytest.mark.asyncio
+    async def test_no_marks_routes_to_single_open(self):
+        """ctrl+o with no marks opens only the highlighted row."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            opener = _RecordingOpener()
+            app._terminal_opener = opener
+            app._service.open_worktree = _async_noop()
+
+            wt_panel = app.query_one(WorktreePanel)
+            wt_panel.set_worktrees([_make_entry(id="a", branch="feature/a", path="/tmp/a")])
+            await pilot.pause()
+            wt_panel._table.focus()
+            await pilot.pause()
+            assert app._selection_cache.count == 0
+
+            app.action_open_worktree()
+            await _drain(pilot, lambda: len(opener.calls) >= 1)
+
+            assert opener.calls == [("feature/a", "/tmp/a")]
+
+    @pytest.mark.asyncio
+    async def test_marks_open_one_call_per_entry(self):
+        """ctrl+o with marks opens every marked worktree once."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            opener = _RecordingOpener()
+            app._terminal_opener = opener
+            app._service.open_worktree = _async_noop()
+
+            entries = [
+                _make_entry(id="a", branch="feature/a", path="/tmp/a"),
+                _make_entry(id="b", branch="feature/b", path="/tmp/b"),
+            ]
+            for e in entries:
+                app._selection_cache.toggle(e)
+
+            app.action_open_worktree()
+            await _drain(pilot, lambda: len(opener.calls) >= 2)
+
+            assert {b for b, _ in opener.calls} == {"feature/a", "feature/b"}
+            assert len(opener.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_opens_in_reverse_resolved_order(self):
+        """The first resolved entry opens last, so it lands in front."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            opener = _RecordingOpener()
+            app._terminal_opener = opener
+            app._service.open_worktree = _async_noop()
+
+            entries = [
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+                _make_entry(id="c", branch="feature/c"),
+            ]
+            for e in entries:
+                app._selection_cache.toggle(e)
+
+            app.action_open_worktree()
+            await _drain(pilot, lambda: len(opener.calls) >= 3)
+
+            # resolved order is (a, b, c); reverse so the first opens last.
+            assert [b for b, _ in opener.calls] == ["feature/c", "feature/b", "feature/a"]
+
+    @pytest.mark.asyncio
+    async def test_clears_succeeded_marks(self):
+        """All marks clear after a fully successful bulk open."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            app._terminal_opener = _RecordingOpener()
+            app._service.open_worktree = _async_noop()
+
+            for e in (
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ):
+                app._selection_cache.toggle(e)
+
+            app.action_open_worktree()
+            await _drain(pilot, lambda: app._selection_cache.count == 0)
+
+            assert app._selection_cache.count == 0
+
+    @pytest.mark.asyncio
+    async def test_failed_open_retains_mark(self):
+        """An entry whose opener raises keeps its mark; the rest clear."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            app._terminal_opener = _RecordingOpener(fail_branches={"feature/b"})
+            app._service.open_worktree = _async_noop()
+
+            for e in (
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ):
+                app._selection_cache.toggle(e)
+
+            app.action_open_worktree()
+            await _drain(pilot, lambda: not app._selection_cache.contains("a"))
+
+            assert app._selection_cache.contains("a") is False
+            assert app._selection_cache.contains("b") is True
+
+    @pytest.mark.asyncio
+    async def test_open_service_failure_counts_as_failed(self):
+        """A raise from open_worktree marks the entry failed and keeps its mark."""
+        from gwt_worktree_manager.services.worktree import WorktreeNotFoundError
+
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            opener = _RecordingOpener()
+            app._terminal_opener = opener
+
+            async def _svc(worktree_id):
+                if worktree_id == "b":
+                    raise WorktreeNotFoundError("nope")
+                return None
+
+            app._service.open_worktree = _svc
+
+            for e in (
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ):
+                app._selection_cache.toggle(e)
+
+            app.action_open_worktree()
+            await _drain(pilot, lambda: not app._selection_cache.contains("a"))
+
+            assert app._selection_cache.contains("a") is False
+            assert app._selection_cache.contains("b") is True
+            # The failing entry never reached the opener.
+            assert ("feature/b", "/tmp/test") not in opener.calls
+
+    @pytest.mark.asyncio
+    async def test_snapshot_guard_keeps_marks_added_mid_run(self):
+        """A mark added during the run survives the end-of-run clear."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            app._terminal_opener = _RecordingOpener()
+
+            late = _make_entry(id="c", branch="feature/c")
+            added = {"done": False}
+
+            async def _svc(worktree_id):
+                if not added["done"]:
+                    app._selection_cache.toggle(late)
+                    added["done"] = True
+                return None
+
+            app._service.open_worktree = _svc
+
+            for e in (
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ):
+                app._selection_cache.toggle(e)
+
+            app.action_open_worktree()
+            await _drain(pilot, lambda: not app._selection_cache.contains("a"))
+
+            assert app._selection_cache.contains("a") is False
+            assert app._selection_cache.contains("b") is False
+            assert app._selection_cache.contains("c") is True
+
+    @pytest.mark.asyncio
+    async def test_single_mark_opens_and_clears(self):
+        """A one-entry mark set opens that entry and clears the mark."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            opener = _RecordingOpener()
+            app._terminal_opener = opener
+            app._service.open_worktree = _async_noop()
+
+            app._selection_cache.toggle(
+                _make_entry(id="a", branch="feature/a", path="/tmp/a")
+            )
+
+            app.action_open_worktree()
+            await _drain(pilot, lambda: app._selection_cache.count == 0)
+
+            assert opener.calls == [("feature/a", "/tmp/a")]
+            assert app._selection_cache.count == 0
+
+    @pytest.mark.asyncio
+    async def test_cross_repo_opens_each_at_its_path(self):
+        """Marks spanning repos each open at their own path."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            opener = _RecordingOpener()
+            app._terminal_opener = opener
+            app._service.open_worktree = _async_noop()
+
+            app._selection_cache.toggle(
+                _make_entry(id="a", repo_name="alpha", branch="x", path="/tmp/alpha")
+            )
+            app._selection_cache.toggle(
+                _make_entry(id="b", repo_name="beta", branch="y", path="/tmp/beta")
+            )
+
+            app.action_open_worktree()
+            await _drain(pilot, lambda: len(opener.calls) >= 2)
+
+            assert {p for _, p in opener.calls} == {"/tmp/alpha", "/tmp/beta"}
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_reports_summary(self):
+        """A partial failure reports opened and failed counts."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            app._terminal_opener = _RecordingOpener(fail_branches={"feature/b"})
+            app._service.open_worktree = _async_noop()
+
+            for e in (
+                _make_entry(id="a", branch="feature/a"),
+                _make_entry(id="b", branch="feature/b"),
+            ):
+                app._selection_cache.toggle(e)
+
+            status = app.query_one(GWTStatusBar)
+            app.action_open_worktree()
+            await _drain(pilot, lambda: "failed" in status._base_message)
+
+            assert status._base_message == "Opened 1, failed 1"
+
+    @pytest.mark.asyncio
+    async def test_drop_guard_ignores_second_invocation(self):
+        """A second open while one is in progress is dropped."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            opener = _RecordingOpener()
+            app._terminal_opener = opener
+            app._service.open_worktree = _async_noop()
+            app._open_in_progress = True  # simulate a batch already running
+
+            app._selection_cache.toggle(_make_entry(id="a", branch="feature/a"))
+
+            app.action_open_worktree()
+            for _ in range(10):
+                await pilot.pause()
+
+            assert opener.calls == []
+            assert app._selection_cache.contains("a") is True

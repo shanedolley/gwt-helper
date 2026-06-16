@@ -151,6 +151,7 @@ class GWTApp(App):
         self._selected_repo = None
         self._selection_cache = SelectionCache()
         self._delete_in_progress = False
+        self._open_in_progress = False
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
@@ -417,12 +418,60 @@ class GWTApp(App):
 
     @work
     async def action_open_worktree(self) -> None:
-        """Open the selected worktree using the configured terminal."""
-        worktree_panel = self.query_one(WorktreePanel)
-        entry = worktree_panel.get_selected()
-        if entry is None:
+        """Open the selected worktree, or the full mark set when non-empty.
+
+        Guarded by an in-progress flag so a second ctrl+o press is dropped
+        rather than launching a concurrent batch, mirroring the delete flow.
+        """
+        if self._open_in_progress:
             return
-        await self._open_worktree_in_terminal(entry)
+        self._open_in_progress = True
+        try:
+            if self._selection_cache.count > 0:
+                await self._run_bulk_open()
+                return
+            worktree_panel = self.query_one(WorktreePanel)
+            entry = worktree_panel.get_selected()
+            if entry is None:
+                return
+            await self._open_worktree_in_terminal(entry)
+        finally:
+            self._open_in_progress = False
+
+    async def _run_bulk_open(self) -> None:
+        """Open every marked worktree, each in its own workspace.
+
+        Entries open in reverse resolved order so the first resolved entry
+        opens last and lands in the foreground. Marks clear only for the
+        worktrees that opened, mirroring the bulk-delete flow; a mark added
+        mid-run survives because only snapshot IDs are cleared.
+        """
+        status = self.query_one(GWTStatusBar)
+        entries = self._selection_cache.resolved_entries()
+        snapshot_ids = {e.id for e in entries}
+        total = len(entries)
+
+        succeeded: list[str] = []
+        for i, entry in enumerate(reversed(entries), start=1):
+            status.update_status(f"Opening {i}/{total}: {entry.branch}")
+            try:
+                await self._service.open_worktree(entry.id)
+                await asyncio.to_thread(
+                    self._terminal_opener.open, entry.branch, entry.path
+                )
+            except Exception:
+                continue
+            succeeded.append(entry.id)
+
+        self._selection_cache.clear_succeeded(
+            [wid for wid in succeeded if wid in snapshot_ids]
+        )
+
+        failed = total - len(succeeded)
+        if failed:
+            status.update_status(f"Opened {len(succeeded)}, failed {failed}")
+        else:
+            status.update_status(f"Opened {len(succeeded)}")
 
     async def _open_worktree_in_terminal(self, entry: WorktreeEntry) -> None:
         """Open a worktree entry using the configured terminal/multiplexer."""
