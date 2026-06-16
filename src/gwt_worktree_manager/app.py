@@ -152,6 +152,7 @@ class GWTApp(App):
         self._selection_cache = SelectionCache()
         self._delete_in_progress = False
         self._open_in_progress = False
+        self._edit_in_progress = False
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
@@ -438,13 +439,14 @@ class GWTApp(App):
         finally:
             self._open_in_progress = False
 
-    async def _run_bulk_open(self) -> None:
-        """Open every marked worktree, each in its own workspace.
+    async def _run_bulk(self, open_one) -> None:
+        """Open every marked worktree in reverse resolved order.
 
-        Entries open in reverse resolved order so the first resolved entry
-        opens last and lands in the foreground. Marks clear only for the
-        worktrees that opened, mirroring the bulk-delete flow; a mark added
-        mid-run survives because only snapshot IDs are cleared.
+        ``open_one(entry)`` is an async callable that opens one worktree and
+        returns True on success. Entries open in reverse resolved order so the
+        first resolved entry opens last and lands in the foreground. Marks
+        clear only for the worktrees that opened, mirroring the bulk-delete
+        flow; a mark added mid-run survives because only snapshot IDs clear.
         """
         status = self.query_one(GWTStatusBar)
         entries = self._selection_cache.resolved_entries()
@@ -455,13 +457,10 @@ class GWTApp(App):
         for i, entry in enumerate(reversed(entries), start=1):
             status.update_status(f"Opening {i}/{total}: {entry.branch}")
             try:
-                await self._service.open_worktree(entry.id)
-                await asyncio.to_thread(
-                    self._terminal_opener.open, entry.branch, entry.path
-                )
+                if await open_one(entry):
+                    succeeded.append(entry.id)
             except Exception:
                 continue
-            succeeded.append(entry.id)
 
         self._selection_cache.clear_succeeded(
             [wid for wid in succeeded if wid in snapshot_ids]
@@ -472,6 +471,18 @@ class GWTApp(App):
             status.update_status(f"Opened {len(succeeded)}, failed {failed}")
         else:
             status.update_status(f"Opened {len(succeeded)}")
+
+    async def _run_bulk_open(self) -> None:
+        """Open every marked worktree in its own terminal workspace."""
+
+        async def _open_one(entry: WorktreeEntry) -> bool:
+            await self._service.open_worktree(entry.id)
+            await asyncio.to_thread(
+                self._terminal_opener.open, entry.branch, entry.path
+            )
+            return True
+
+        await self._run_bulk(_open_one)
 
     async def _open_worktree_in_terminal(self, entry: WorktreeEntry) -> None:
         """Open a worktree entry using the configured terminal/multiplexer."""
@@ -486,32 +497,60 @@ class GWTApp(App):
 
     @work
     async def action_edit_worktree(self) -> None:
-        """Open the selected worktree in the configured editor."""
-        worktree_panel = self.query_one(WorktreePanel)
-        entry = worktree_panel.get_selected()
-        if entry is None:
+        """Open the selected worktree, or the full mark set, in the editor.
+
+        Guarded by an in-progress flag so a second ctrl+e press is dropped
+        rather than launching a concurrent batch, mirroring the delete flow.
+        """
+        if self._edit_in_progress:
             return
+        self._edit_in_progress = True
+        try:
+            if self._selection_cache.count > 0:
+                await self._run_bulk_edit()
+                return
+            worktree_panel = self.query_one(WorktreePanel)
+            entry = worktree_panel.get_selected()
+            if entry is None:
+                return
+            ok = await self._edit_worktree_entry(entry)
+            status = self.query_one(GWTStatusBar)
+            editor = self._config.editor
+            if editor == "terminal":
+                status.update_status(f"Opened terminal: {entry.branch}")
+            elif ok:
+                status.update_status(f"Opened in {editor}: {entry.branch}")
+            else:
+                status.update_status(f"Editor not found: {editor}")
+        finally:
+            self._edit_in_progress = False
 
+    async def _edit_worktree_entry(self, entry: WorktreeEntry) -> bool:
+        """Open one worktree in the configured editor. Returns success.
+
+        Covers both editor sub-paths and does not touch the status bar, so it
+        backs both the single-edit action and the bulk-edit loop.
+        """
         editor = self._config.editor
-
         if editor == "terminal":
             # Use editor_terminal if set, otherwise fall back to default terminal
             term = self._config.editor_terminal or self._config.terminal
             opener = TerminalOpener(terminal=term, ai_assistant="none")
             await asyncio.to_thread(opener.open, entry.branch, entry.path)
-            self.query_one(GWTStatusBar).update_status(f"Opened terminal: {entry.branch}")
-            return
-
-        cmd = editor
+            return True
         try:
             subprocess.Popen(
-                [cmd, entry.path],
+                [editor, entry.path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            self.query_one(GWTStatusBar).update_status(f"Opened in {editor}: {entry.branch}")
+            return True
         except FileNotFoundError:
-            self.query_one(GWTStatusBar).update_status(f"Editor not found: {cmd}")
+            return False
+
+    async def _run_bulk_edit(self) -> None:
+        """Open every marked worktree in its own editor window."""
+        await self._run_bulk(self._edit_worktree_entry)
 
     @work
     async def action_open_issue_url(self) -> None:

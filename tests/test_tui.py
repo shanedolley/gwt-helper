@@ -1206,3 +1206,134 @@ class TestBulkOpen:
 
             assert opener.calls == []
             assert app._selection_cache.contains("a") is True
+
+
+# ---------------------------------------------------------------------------
+# Bulk edit (ctrl+e)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingPopen:
+    """Records subprocess.Popen invocations; can be set to raise."""
+
+    def __init__(self, raise_exc=None):
+        self.calls: list[list[str]] = []
+        self._raise = raise_exc
+
+    def __call__(self, args, **kwargs):
+        self.calls.append(list(args))
+        if self._raise is not None:
+            raise self._raise
+        return object()
+
+
+class TestBulkEdit:
+    @pytest.mark.asyncio
+    async def test_no_marks_single_edit_external(self, monkeypatch):
+        """ctrl+e with no marks opens the highlighted row in the editor."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            app._config.editor = "code"
+            popen = _RecordingPopen()
+            monkeypatch.setattr("gwt_worktree_manager.app.subprocess.Popen", popen)
+
+            wt_panel = app.query_one(WorktreePanel)
+            wt_panel.set_worktrees([_make_entry(id="a", branch="feature/a", path="/tmp/a")])
+            await pilot.pause()
+            wt_panel._table.focus()
+            await pilot.pause()
+
+            status = app.query_one(GWTStatusBar)
+            app.action_edit_worktree()
+            await _drain(pilot, lambda: len(popen.calls) >= 1)
+
+            assert popen.calls == [["code", "/tmp/a"]]
+            assert status._base_message == "Opened in code: feature/a"
+
+    @pytest.mark.asyncio
+    async def test_marks_bulk_edit_popen_per_entry(self, monkeypatch):
+        """ctrl+e with marks opens each marked worktree once and clears marks."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            app._config.editor = "code"
+            popen = _RecordingPopen()
+            monkeypatch.setattr("gwt_worktree_manager.app.subprocess.Popen", popen)
+
+            app._selection_cache.toggle(
+                _make_entry(id="a", branch="feature/a", path="/tmp/a")
+            )
+            app._selection_cache.toggle(
+                _make_entry(id="b", branch="feature/b", path="/tmp/b")
+            )
+
+            app.action_edit_worktree()
+            await _drain(pilot, lambda: app._selection_cache.count == 0)
+
+            assert {tuple(c) for c in popen.calls} == {
+                ("code", "/tmp/a"),
+                ("code", "/tmp/b"),
+            }
+            assert app._selection_cache.count == 0
+
+    @pytest.mark.asyncio
+    async def test_bulk_edit_terminal_subpath(self, monkeypatch):
+        """editor == 'terminal' routes each entry through a TerminalOpener."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            app._config.editor = "terminal"
+
+            calls: list[str] = []
+
+            def _fake_open(self, branch, path):
+                calls.append(branch)
+                return f"Opened: {branch}"
+
+            monkeypatch.setattr(
+                "gwt_worktree_manager.app.TerminalOpener.open", _fake_open
+            )
+
+            app._selection_cache.toggle(_make_entry(id="a", branch="feature/a"))
+            app._selection_cache.toggle(_make_entry(id="b", branch="feature/b"))
+
+            app.action_edit_worktree()
+            await _drain(pilot, lambda: app._selection_cache.count == 0)
+
+            assert sorted(calls) == ["feature/a", "feature/b"]
+            assert app._selection_cache.count == 0
+
+    @pytest.mark.asyncio
+    async def test_missing_editor_retains_mark_and_reports(self, monkeypatch):
+        """A missing editor (FileNotFoundError) keeps the mark and is reported."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            app._config.editor = "ghost-editor"
+            popen = _RecordingPopen(raise_exc=FileNotFoundError())
+            monkeypatch.setattr("gwt_worktree_manager.app.subprocess.Popen", popen)
+
+            app._selection_cache.toggle(_make_entry(id="a", branch="feature/a"))
+
+            status = app.query_one(GWTStatusBar)
+            app.action_edit_worktree()
+            await _drain(pilot, lambda: "failed" in status._base_message)
+
+            assert app._selection_cache.contains("a") is True
+            assert status._base_message == "Opened 0, failed 1"
+
+    @pytest.mark.asyncio
+    async def test_edit_drop_guard_ignores_second_invocation(self, monkeypatch):
+        """A second ctrl+e while one is in progress is dropped."""
+        async with GWTApp().run_test() as pilot:
+            app = pilot.app
+            app._config.editor = "code"
+            popen = _RecordingPopen()
+            monkeypatch.setattr("gwt_worktree_manager.app.subprocess.Popen", popen)
+            app._edit_in_progress = True
+
+            app._selection_cache.toggle(_make_entry(id="a", branch="feature/a"))
+
+            app.action_edit_worktree()
+            for _ in range(10):
+                await pilot.pause()
+
+            assert popen.calls == []
+            assert app._selection_cache.contains("a") is True
