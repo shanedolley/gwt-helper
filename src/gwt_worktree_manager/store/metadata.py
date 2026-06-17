@@ -11,6 +11,19 @@ import warnings
 
 
 @dataclass
+class ReconcileResult:
+    """Counts of changes applied during a reconcile.
+
+    ``updated`` counts entries whose branch changed in place. ``added`` and
+    ``removed`` count hydrated and stale entries respectively.
+    """
+
+    updated: int = 0
+    added: int = 0
+    removed: int = 0
+
+
+@dataclass
 class WorktreeEntry:
     """A worktree metadata entry."""
 
@@ -230,16 +243,26 @@ class MetadataStore:
 
     # Reconciliation (FR-023, FR-024)
 
-    def reconcile(self, git_worktrees: list, repo_name: str = "") -> None:
+    def reconcile(self, git_worktrees: list, repo_name: str = "") -> ReconcileResult:
         """Reconcile metadata with Git worktree state.
 
-        Git state is authoritative for worktree existence.
-        Metadata is supplementary (tags, timestamps, issue IDs).
+        Git state is authoritative for worktree existence and for the branch
+        checked out at each path. Metadata is supplementary (tags, timestamps,
+        issue links).
+
+        For a path already tracked, a changed branch updates ``branch`` and
+        re-derives ``work_type``/``issue_id``; an empty re-derived ``issue_id``
+        clears the now-stale ``issue_url``. ``source_branch`` and ``tags`` are
+        left untouched. Pre-existing inconsistencies on an unchanged branch are
+        not self-healed.
 
         Args:
             git_worktrees: List of WorktreeInfo from git worktree list.
                            Must have .path and .branch attributes.
             repo_name: Optional repo name to store in hydrated entries.
+
+        Returns:
+            ReconcileResult with updated/added/removed counts.
         """
         git_paths = {wt.path for wt in git_worktrees}
 
@@ -254,15 +277,47 @@ class MetadataStore:
         for entry_id in stale_ids:
             del self._entries[entry_id]
 
-        # Hydrate missing entries (Git knows about it but no metadata)
-        changed = bool(stale_ids)
-        existing_paths = {e.path for e in self._entries.values()}
+        # Update tracked paths whose branch changed in place.
+        entries_by_path = {e.path: e for e in self._entries.values()}
+        updated = 0
+        for wt in git_worktrees:
+            entry = entries_by_path.get(wt.path)
+            if entry is None:
+                continue
+            git_branch = wt.branch or ""
+            if git_branch != entry.branch:
+                self._update_entry_branch(entry, git_branch)
+                updated += 1
+
+        # Hydrate missing entries (Git knows about it but no metadata).
+        # Snapshot taken before hydration so the guard reflects pre-hydrate state.
+        added = 0
+        existing_paths = set(entries_by_path)
         for wt in git_worktrees:
             if wt.path not in existing_paths and not getattr(wt, "is_bare", False):
                 self._hydrate_entry(wt, repo_name)
-                changed = True
-        if changed:
+                added += 1
+
+        removed = len(stale_ids)
+        if removed or added or updated:
             self._save()
+        return ReconcileResult(updated=updated, added=added, removed=removed)
+
+    def _update_entry_branch(self, entry: "WorktreeEntry", branch: str) -> None:
+        """Apply a changed branch to an entry and re-derive dependent fields.
+
+        Clears ``issue_url`` whenever the re-derived ``issue_id`` changes,
+        including to empty, because the stored link belongs to the old issue.
+        The async re-fetch repopulates it for a new, non-empty ``issue_id``.
+        """
+        entry.branch = branch
+        work_type, issue_id = extract_branch_parts(branch)
+        # Keep the link only when the issue is non-empty and unchanged;
+        # otherwise it is stale (different issue) or impossible (no issue).
+        if not issue_id or issue_id != entry.issue_id:
+            entry.issue_url = ""
+        entry.work_type = work_type
+        entry.issue_id = issue_id
 
     def _hydrate_entry(self, wt, repo_name: str = "") -> None:
         """Create a metadata entry from a Git worktree.
