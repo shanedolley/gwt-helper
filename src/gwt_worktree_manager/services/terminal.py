@@ -1,11 +1,14 @@
 """Terminal opening strategies for different multiplexers and terminals."""
 
+import json
 import os
 import platform
 import shlex
 import shutil
 import subprocess
 import time
+
+from gwt_worktree_manager.naming import unique_workspace_name
 
 
 class TerminalOpener:
@@ -19,10 +22,15 @@ class TerminalOpener:
             ai_assistant if ai_assistant in self._ALLOWED_AI_ASSISTANTS else "none"
         )
 
-    def open(self, branch: str, path: str) -> str:
-        """Open a worktree. Returns a status message."""
+    def open(self, branch: str, path: str, workspace_name: str | None = None) -> str:
+        """Open a worktree. Returns a status message.
+
+        ``workspace_name`` is the friendly cmux workspace name. Other terminals
+        ignore it and keep naming sessions after the branch.
+        """
+        if self._terminal == "cmux":
+            return self._open_cmux(branch, path, workspace_name)
         dispatch = {
-            "cmux": self._open_cmux,
             "tmux": self._open_tmux,
         }
         opener = dispatch.get(self._terminal, self._open_specific_terminal)
@@ -30,26 +38,48 @@ class TerminalOpener:
 
     # ── cmux ─────────────────────────────────────────────────────────────
 
-    def _open_cmux(self, branch: str, path: str) -> str:
+    def _open_cmux(
+        self, branch: str, path: str, workspace_name: str | None = None
+    ) -> str:
         if not shutil.which("cmux"):
             return self._open_specific_terminal(branch, path)
 
-        # Check if workspace already exists
-        result = subprocess.run(
-            ["cmux", "list-workspaces"],
-            capture_output=True, text=True,
-        )
-        for line in result.stdout.splitlines():
-            parts = line.strip().lstrip("* ").split(None, 1)
-            if len(parts) == 2:
-                ref, name = parts[0], parts[1]
-                clean_name = name.split("[")[0].strip()
-                if clean_name == branch:
-                    self._run_silent(["cmux", "select-workspace", "--workspace", ref])
-                    return f"Switched to: {branch}"
+        desired = workspace_name or branch
+        workspaces = self._list_cmux_workspaces()
 
-        self._create_cmux_workspace(branch, path)
-        return f"Opened: {branch}"
+        # Already open? Match on the worktree directory, not the name -- the
+        # friendly name no longer equals the branch, and two worktrees can share
+        # a name (see versioning below) but never a directory.
+        target = os.path.realpath(path)
+        for ws in workspaces:
+            cwd = ws.get("current_directory")
+            if cwd and os.path.realpath(cwd) == target:
+                self._run_silent(
+                    ["cmux", "select-workspace", "--workspace", ws["ref"]]
+                )
+                return f"Switched to: {ws.get('custom_title') or desired}"
+
+        # New workspace: avoid colliding with an existing name by appending V2,
+        # V3, ... (e.g. same branch name across two repos).
+        existing = {
+            ws["custom_title"] for ws in workspaces if ws.get("custom_title")
+        }
+        name = unique_workspace_name(desired, existing)
+        self._create_cmux_workspace(name, path)
+        return f"Opened: {name}"
+
+    def _list_cmux_workspaces(self) -> list[dict]:
+        """Return cmux workspaces as dicts (ref, custom_title, current_directory)."""
+        result = subprocess.run(
+            ["cmux", "workspace", "list", "--json"],
+            capture_output=True, text=True,
+            env={**os.environ, "CMUX_QUIET": "1"},
+        )
+        try:
+            data = json.loads(result.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return []
+        return data.get("workspaces", [])
 
     def _create_cmux_workspace(self, name: str, cwd: str) -> None:
         ws_out = subprocess.run(

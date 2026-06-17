@@ -17,6 +17,7 @@ from textual import work
 
 from gwt_worktree_manager.config.manager import load_config
 from gwt_worktree_manager.git import operations as git
+from gwt_worktree_manager.naming import workspace_name_for
 from gwt_worktree_manager.services.discovery import RepoDiscovery
 from gwt_worktree_manager.services.hooks import HookRunner
 from gwt_worktree_manager.services.terminal import TerminalOpener
@@ -488,7 +489,8 @@ class GWTApp(App):
         """
         await self._service.open_worktree(entry.id)
         await asyncio.to_thread(
-            self._terminal_opener.open, entry.branch, entry.path
+            self._terminal_opener.open,
+            entry.branch, entry.path, workspace_name_for(entry),
         )
         return True
 
@@ -501,7 +503,8 @@ class GWTApp(App):
         try:
             await self._service.open_worktree(entry.id)
             status_msg = await asyncio.to_thread(
-                self._terminal_opener.open, entry.branch, entry.path
+                self._terminal_opener.open,
+                entry.branch, entry.path, workspace_name_for(entry),
             )
             self.query_one(GWTStatusBar).update_status(status_msg)
         except Exception as e:
@@ -548,7 +551,10 @@ class GWTApp(App):
             # Use editor_terminal if set, otherwise fall back to default terminal
             term = self._config.editor_terminal or self._config.terminal
             opener = TerminalOpener(terminal=term, ai_assistant="none")
-            await asyncio.to_thread(opener.open, entry.branch, entry.path)
+            await asyncio.to_thread(
+                opener.open,
+                entry.branch, entry.path, workspace_name_for(entry),
+            )
             return True
         try:
             subprocess.Popen(

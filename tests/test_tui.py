@@ -938,7 +938,7 @@ class _RecordingOpener:
         self.calls: list[tuple[str, str]] = []
         self._fail = set(fail_branches or [])
 
-    def open(self, branch: str, path: str) -> str:
+    def open(self, branch: str, path: str, workspace_name: str | None = None) -> str:
         self.calls.append((branch, path))
         if branch in self._fail:
             raise RuntimeError(f"boom: {branch}")
@@ -1284,7 +1284,7 @@ class TestBulkEdit:
 
             calls: list[str] = []
 
-            def _fake_open(self, branch, path):
+            def _fake_open(self, branch, path, workspace_name=None):
                 calls.append(branch)
                 return f"Opened: {branch}"
 
