@@ -6,11 +6,9 @@ from pathlib import Path
 
 from gwt_worktree_manager.services.worktree import (
     WorktreeService,
-    OpenResult,
     WorktreeNotFoundError,
     BranchExistsError,
     InvalidInputError,
-    UncommittedChangesError,
     BranchCheckedOutError,
     to_kebab_case,
     generate_branch_name,
@@ -18,8 +16,9 @@ from gwt_worktree_manager.services.worktree import (
     validate_issue_id,
 )
 from gwt_worktree_manager.config.manager import Config
-from gwt_worktree_manager.store.metadata import MetadataStore
+from gwt_worktree_manager.store.metadata import MetadataStore, WorktreeEntry
 from gwt_worktree_manager.services.discovery import RepoDiscovery
+from gwt_worktree_manager.integrations import IssueInfo
 
 
 # ==============================================================================
@@ -420,3 +419,142 @@ class TestWorktreeServiceIntegration:
                 issue_id="TB-900",
                 description="bad repo",
             )
+
+
+def _entry(**overrides) -> WorktreeEntry:
+    import uuid
+
+    defaults = {
+        "id": str(uuid.uuid4()),
+        "repo_name": "repo",
+        "branch": "feature/TB-1-x",
+        "path": "/tmp/repo/feature/TB-1-x",
+        "issue_id": "TB-1",
+        "issue_url": "",
+    }
+    defaults.update(overrides)
+    return WorktreeEntry(**defaults)
+
+
+class TestRefreshIssueUrls:
+    def _install_fake_lookup(self, svc, results):
+        """Replace get_issue_info with a fake driven by an issue_id map.
+
+        ``results`` maps issue_id to an IssueInfo, an Exception to raise, or
+        None. Records calls on the returned list.
+        """
+        calls = []
+
+        async def fake_get_issue_info(issue_id):
+            calls.append(issue_id)
+            outcome = results.get(issue_id)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        svc.get_issue_info = fake_get_issue_info
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_updates_and_persists_url_on_success(self, worktree_env):
+        svc = worktree_env["service"]
+        meta = worktree_env["metadata"]
+        entry = _entry(issue_id="TB-1", issue_url="")
+        meta.create(entry)
+        self._install_fake_lookup(
+            svc, {"TB-1": IssueInfo(title="t", status="open", url="https://x/TB-1")}
+        )
+
+        await svc.refresh_issue_urls([entry])
+
+        assert entry.issue_url == "https://x/TB-1"
+        # Persisted: a fresh store loaded from the same path sees the update.
+        reloaded = MetadataStore(metadata_path=meta._path).get(entry.id)
+        assert reloaded is not None
+        assert reloaded.issue_url == "https://x/TB-1"
+
+    @pytest.mark.asyncio
+    async def test_preserves_url_when_lookup_returns_none(self, worktree_env):
+        svc = worktree_env["service"]
+        meta = worktree_env["metadata"]
+        entry = _entry(issue_id="TB-1", issue_url="https://x/keep")
+        meta.create(entry)
+        self._install_fake_lookup(svc, {"TB-1": None})
+
+        await svc.refresh_issue_urls([entry])
+
+        assert entry.issue_url == "https://x/keep"
+
+    @pytest.mark.asyncio
+    async def test_preserves_url_on_exception(self, worktree_env):
+        svc = worktree_env["service"]
+        meta = worktree_env["metadata"]
+        entry = _entry(issue_id="TB-1", issue_url="https://x/keep")
+        meta.create(entry)
+        self._install_fake_lookup(svc, {"TB-1": RuntimeError("offline")})
+
+        await svc.refresh_issue_urls([entry])
+
+        assert entry.issue_url == "https://x/keep"
+
+    @pytest.mark.asyncio
+    async def test_skips_entries_without_issue_id(self, worktree_env):
+        svc = worktree_env["service"]
+        meta = worktree_env["metadata"]
+        entry = _entry(issue_id="", issue_url="")
+        meta.create(entry)
+        calls = self._install_fake_lookup(svc, {})
+
+        await svc.refresh_issue_urls([entry])
+
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_updates_only_successful(self, worktree_env):
+        svc = worktree_env["service"]
+        meta = worktree_env["metadata"]
+        fail = _entry(issue_id="TB-1", issue_url="https://x/old1")
+        ok = _entry(issue_id="TB-2", issue_url="https://x/old2")
+        meta.create(fail)
+        meta.create(ok)
+        self._install_fake_lookup(
+            svc,
+            {
+                "TB-1": RuntimeError("boom"),
+                "TB-2": IssueInfo(title="t", status="open", url="https://x/new2"),
+            },
+        )
+
+        await svc.refresh_issue_urls([fail, ok])
+
+        assert fail.issue_url == "https://x/old1"
+        assert ok.issue_url == "https://x/new2"
+
+    @pytest.mark.asyncio
+    async def test_skips_entry_not_in_store(self, worktree_env):
+        # An entry never persisted is left untouched, not mutated, and no
+        # KeyError escapes from metadata.update.
+        svc = worktree_env["service"]
+        entry = _entry(issue_id="TB-1", issue_url="https://x/old")  # not created
+        self._install_fake_lookup(
+            svc, {"TB-1": IssueInfo(title="t", status="open", url="https://x/new")}
+        )
+
+        result = await svc.refresh_issue_urls([entry])
+
+        assert result == 0
+        assert entry.issue_url == "https://x/old"
+
+    @pytest.mark.asyncio
+    async def test_coerces_none_url_to_empty_string(self, worktree_env):
+        svc = worktree_env["service"]
+        meta = worktree_env["metadata"]
+        entry = _entry(issue_id="TB-1", issue_url="https://x/old")
+        meta.create(entry)
+        self._install_fake_lookup(
+            svc, {"TB-1": IssueInfo(title="t", status="open", url=None)}
+        )
+
+        await svc.refresh_issue_urls([entry])
+
+        assert entry.issue_url == ""

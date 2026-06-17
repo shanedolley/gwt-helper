@@ -608,6 +608,40 @@ class WorktreeService:
         """Return discovered repos."""
         return await self._discovery.discover_repos()
 
+    async def refresh_issue_urls(self, entries: list[WorktreeEntry]) -> int:
+        """Re-fetch and persist ``issue_url`` for entries with an issue ID.
+
+        Looks up each entry's issue concurrently through ``get_issue_info``
+        (cache-backed). On success it sets ``issue_url`` to the fetched URL
+        (coercing ``None`` to ``""``) and persists via the metadata store.
+        Lookups that fail or return nothing leave the entry untouched, so a
+        transient tracker error never blanks a valid link. Entries without an
+        ``issue_id`` are skipped and trigger no lookup.
+
+        Returns the number of entries whose ``issue_url`` changed.
+        """
+        targets = [e for e in entries if e.issue_id]
+        if not targets:
+            return 0
+
+        results = await asyncio.gather(
+            *(self.get_issue_info(e.issue_id) for e in targets),
+            return_exceptions=True,
+        )
+
+        changed = 0
+        for entry, result in zip(targets, results):
+            if isinstance(result, BaseException) or result is None:
+                continue
+            new_url = result.url or ""
+            # Mutate only when the change will persist: skip entries the store
+            # does not know, so in-memory state never diverges from disk.
+            if new_url != entry.issue_url and self._metadata.get(entry.id) is not None:
+                entry.issue_url = new_url
+                self._metadata.update(entry)
+                changed += 1
+        return changed
+
     async def get_issue_info(self, issue_id: str) -> "IssueInfo | None":
         """Try to fetch issue info from Linear then ADO."""
         if not issue_id:
