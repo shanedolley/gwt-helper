@@ -2,7 +2,7 @@
 
 import pytest
 
-from gwt_worktree_manager.app import GWTApp
+from gwt_worktree_manager.app import GWTApp, _format_refresh_summary
 from gwt_worktree_manager.store.metadata import WorktreeEntry
 from gwt_worktree_manager.widgets.detail_panel import DetailPanel
 from gwt_worktree_manager.widgets.dialogs import (
@@ -97,6 +97,53 @@ class TestGWTApp:
             await pilot.pause()
             status = pilot.app.query_one(GWTStatusBar)
             assert str(status.content) == ""
+
+    @pytest.mark.asyncio
+    async def test_run_refresh_returns_summary_and_sets_status(self):
+        async with GWTApp().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            summary = await app._run_refresh()
+            assert isinstance(summary, str)
+            assert summary == "No changes" or summary.startswith("Updated ")
+            status = app.query_one(GWTStatusBar)
+            assert str(status.content) == summary
+
+    @pytest.mark.asyncio
+    async def test_refresh_guard_drops_concurrent_call(self):
+        async with GWTApp().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            calls = []
+
+            async def fake_run():
+                calls.append(1)
+                return "No changes"
+
+            app._run_refresh = fake_run
+
+            # Guard set: a press must be dropped without running the refresh.
+            app._refresh_in_progress = True
+            app.action_refresh()
+            await app.workers.wait_for_complete()
+            assert calls == []
+
+            # Guard clear: the refresh runs.
+            app._refresh_in_progress = False
+            app.action_refresh()
+            await app.workers.wait_for_complete()
+            assert calls == [1]
+
+
+class TestRefreshSummary:
+    def test_no_changes(self):
+        assert _format_refresh_summary(0, 0, 0) == "No changes"
+
+    def test_counts(self):
+        assert _format_refresh_summary(1, 0, 2) == "Updated 1, added 0, removed 2"
+
+    def test_any_nonzero_shows_counts(self):
+        assert _format_refresh_summary(0, 3, 0) == "Updated 0, added 3, removed 0"
 
     @pytest.mark.asyncio
     async def test_tab_cycles_focus(self):
