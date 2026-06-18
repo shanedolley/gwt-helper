@@ -203,7 +203,7 @@ def _install_cli(name: str, cmd: str, os_name: str) -> bool:
             console.print(f"  [green]{name} installed successfully.[/]")
             return True
         else:
-            console.print(f"  [red]Installation failed. Please install manually.[/]")
+            console.print("  [red]Installation failed. Please install manually.[/]")
             return False
     return False
 
@@ -300,7 +300,7 @@ def run_wizard() -> dict:
 
     git_ok, git_info = _check_git()
     if not git_ok:
-        console.print(f"  [red]Git not found. Please install git and re-run.[/]")
+        console.print("  [red]Git not found. Please install git and re-run.[/]")
         raise SystemExit(1)
     console.print(f"  [green]{git_info}[/]")
 
@@ -333,7 +333,7 @@ def run_wizard() -> dict:
         raise SystemExit("Setup cancelled.")
     config["scan_paths"] = [scan_path]
 
-    console.print(f"  [bright_black]Scanning for git repos...[/]")
+    console.print("  [bright_black]Scanning for git repos...[/]")
     repos = _scan_repos(scan_path)
     console.print(f"  [green]Found {len(repos)} repositories[/]")
 
@@ -402,10 +402,10 @@ def run_wizard() -> dict:
     if "ado" in selected_pm:
         console.print()
         if _check_cli("az"):
-            console.print(f"  [green]Azure CLI: installed[/]")
+            console.print("  [green]Azure CLI: installed[/]")
             _authenticate_cli("Azure CLI", ["az", "login"], _check_az_auth)
         else:
-            console.print(f"  [yellow]Azure CLI: not installed[/]")
+            console.print("  [yellow]Azure CLI: not installed[/]")
             if _install_cli("Azure CLI", "az", os_name):
                 _authenticate_cli("Azure CLI", ["az", "login"], _check_az_auth)
 

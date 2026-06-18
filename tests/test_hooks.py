@@ -1,6 +1,5 @@
 import pytest
 import os
-from pathlib import Path
 from gwt_worktree_manager.services.hooks import (
     HookRunner,
     HookResult,

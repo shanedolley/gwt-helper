@@ -347,7 +347,7 @@ class TestCLIJsonOutput:
         """Verify the JSON output structure has all required fields."""
         service, config, metadata, discovery = _make_service(e2e_env)
 
-        entry = await service.create_worktree(
+        await service.create_worktree(
             e2e_env["repo_name"], "feature", "JSON-1", "json test"
         )
 
@@ -393,10 +393,10 @@ class TestCLIJsonOutput:
         """JSON output with multiple worktrees should include all entries."""
         service, config, metadata, discovery = _make_service(e2e_env)
 
-        e1 = await service.create_worktree(
+        await service.create_worktree(
             e2e_env["repo_name"], "feature", "JSON-10", "first"
         )
-        e2 = await service.create_worktree(
+        await service.create_worktree(
             e2e_env["repo_name"], "bug", "JSON-11", "second"
         )
 

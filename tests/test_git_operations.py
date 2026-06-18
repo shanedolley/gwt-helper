@@ -10,7 +10,6 @@ from gwt_worktree_manager.git.operations import (
     GitError,
     GitNotFoundError,
     GitVersionError,
-    WorktreeInfo,
     parse_worktree_list,
     validate_branch_name,
     get_git_version,

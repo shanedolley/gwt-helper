@@ -5,7 +5,6 @@ import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
 
-import pytest
 from typer.testing import CliRunner
 
 from gwt_worktree_manager.cli import app

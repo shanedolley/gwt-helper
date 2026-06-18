@@ -1,6 +1,5 @@
 import pytest
-from pathlib import Path
-from gwt_worktree_manager.config.manager import load_config, Config, ConfigError, RepoConfig
+from gwt_worktree_manager.config.manager import load_config, Config, ConfigError
 
 
 class TestLoadConfig:
