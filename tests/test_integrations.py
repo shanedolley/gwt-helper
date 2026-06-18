@@ -35,7 +35,6 @@ class TestIssueCache:
     def test_expired_entry_returns_none(self):
         cache = IssueCache(ttl_seconds=0)  # Immediate expiry
         cache.set("linear", "TB-1", IssueInfo(title="Expired", status="Done"))
-        import time
         time.sleep(0.01)
         assert cache.get("linear", "TB-1") is None
 

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from gwt_worktree_manager.config.manager import Config
-from gwt_worktree_manager.services.discovery import DiscoveredRepo, RepoDiscovery
+from gwt_worktree_manager.services.discovery import RepoDiscovery
 
 
 @pytest.fixture
