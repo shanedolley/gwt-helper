@@ -47,11 +47,22 @@ from gwt_worktree_manager.widgets.status_bar import GWTStatusBar
 from gwt_worktree_manager.widgets.worktree_panel import WorktreePanel
 
 
-def _format_refresh_summary(updated: int, added: int, removed: int) -> str:
-    """Build the status-bar message for a rescan result."""
-    if not (updated or added or removed):
-        return "No changes"
-    return f"Updated {updated}, added {added}, removed {removed}"
+def _format_refresh_summary(
+    updated: int, added: int, removed: int, failed: int = 0
+) -> str:
+    """Build the status-bar message for a rescan result.
+
+    ``failed`` is the number of repos whose scan raised. When non-zero it is
+    appended so a silent failure cannot read as a clean "No changes".
+    """
+    if updated or added or removed:
+        base = f"Updated {updated}, added {added}, removed {removed}"
+    else:
+        base = "No changes"
+    if failed:
+        unit = "repo" if failed == 1 else "repos"
+        return f"{base} ({failed} {unit} failed)"
+    return base
 
 
 class GWTCommands(Provider):
@@ -624,6 +635,7 @@ class GWTApp(App):
         self._repos = await self._discovery.discover_repos(force_refresh=True)
 
         total = ReconcileResult()
+        failed = 0
         for repo in self._repos:
             try:
                 worktrees = await git.list_worktrees(repo.path)
@@ -632,7 +644,7 @@ class GWTApp(App):
                 total.added += result.added
                 total.removed += result.removed
             except Exception:
-                pass
+                failed += 1
 
         status.update_status("Fetching issues...")
         await self._service.refresh_issue_urls(self._metadata.list_all())
@@ -642,7 +654,9 @@ class GWTApp(App):
         if previous_repo:
             repo_panel.select_by_name(previous_repo.name)
 
-        summary = _format_refresh_summary(total.updated, total.added, total.removed)
+        summary = _format_refresh_summary(
+            total.updated, total.added, total.removed, failed
+        )
         status.update_status(summary)
         return summary
 

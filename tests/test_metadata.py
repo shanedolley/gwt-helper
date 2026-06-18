@@ -203,6 +203,7 @@ class TestReconcileUpdatesAndCounts:
             work_type="feature",
             issue_id="",
             issue_url="https://example.test/issue",
+            issue_tracker="linear",
         )
         store.create(entry)
 
@@ -215,6 +216,7 @@ class TestReconcileUpdatesAndCounts:
         assert updated.issue_id == ""
         # issue_id became empty, so the stale issue link is cleared
         assert updated.issue_url == ""
+        assert updated.issue_tracker == ""
 
     def test_changed_branch_with_issue_rederives_issue_id(self, store):
         entry = _make_entry(
@@ -240,6 +242,7 @@ class TestReconcileUpdatesAndCounts:
             branch="feature/TB-1-old",
             issue_id="TB-1",
             issue_url="https://example.test/TB-1",
+            issue_tracker="linear",
         )
         store.create(entry)
 
@@ -248,6 +251,7 @@ class TestReconcileUpdatesAndCounts:
         updated = store.get(entry.id)
         assert updated.issue_id == "TB-2"
         assert updated.issue_url == ""
+        assert updated.issue_tracker == ""
 
     def test_returns_counts_for_update_add_remove(self, store):
         # changed: branch differs; identical: branch matches; removed: absent from git

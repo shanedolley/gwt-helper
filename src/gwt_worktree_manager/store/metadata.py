@@ -306,9 +306,11 @@ class MetadataStore:
     def _update_entry_branch(self, entry: "WorktreeEntry", branch: str) -> None:
         """Apply a changed branch to an entry and re-derive dependent fields.
 
-        Clears ``issue_url`` whenever the re-derived ``issue_id`` changes,
-        including to empty, because the stored link belongs to the old issue.
-        The async re-fetch repopulates it for a new, non-empty ``issue_id``.
+        Clears the issue link (``issue_url`` and ``issue_tracker``) whenever the
+        re-derived ``issue_id`` changes, including to empty, because the stored
+        link belongs to the old issue. The async re-fetch repopulates
+        ``issue_url`` for a new, non-empty ``issue_id``. ``source_branch`` and
+        ``tags`` are left untouched.
         """
         entry.branch = branch
         work_type, issue_id = extract_branch_parts(branch)
@@ -316,6 +318,7 @@ class MetadataStore:
         # otherwise it is stale (different issue) or impossible (no issue).
         if not issue_id or issue_id != entry.issue_id:
             entry.issue_url = ""
+            entry.issue_tracker = ""
         entry.work_type = work_type
         entry.issue_id = issue_id
 
