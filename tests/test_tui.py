@@ -2,7 +2,7 @@
 
 import pytest
 
-from gwt_worktree_manager.app import GWTApp
+from gwt_worktree_manager.app import GWTApp, _format_refresh_summary
 from gwt_worktree_manager.store.metadata import WorktreeEntry
 from gwt_worktree_manager.widgets.detail_panel import DetailPanel
 from gwt_worktree_manager.widgets.dialogs import (
@@ -90,13 +90,87 @@ class TestGWTApp:
 
     @pytest.mark.asyncio
     async def test_refresh_action(self):
-        """Pressing 'r' triggers a refresh and leaves the status blank."""
+        """Pressing ctrl+r runs a rescan and reports a summary."""
         async with GWTApp().run_test() as pilot:
             await pilot.pause()
-            await pilot.press("r")
+            await pilot.press("ctrl+r")
+            await pilot.app.workers.wait_for_complete()
             await pilot.pause()
             status = pilot.app.query_one(GWTStatusBar)
-            assert str(status.content) == ""
+            text = str(status.content)
+            assert text.startswith("No changes") or text.startswith("Updated ")
+
+    @pytest.mark.asyncio
+    async def test_run_refresh_returns_summary_and_sets_status(self):
+        async with GWTApp().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            summary = await app._run_refresh()
+            assert isinstance(summary, str)
+            assert summary.startswith("No changes") or summary.startswith("Updated ")
+            status = app.query_one(GWTStatusBar)
+            assert str(status.content) == summary
+
+    @pytest.mark.asyncio
+    async def test_run_refresh_forces_fresh_discovery(self):
+        async with GWTApp().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            captured = {}
+
+            async def spy_discover(force_refresh=False):
+                captured["force_refresh"] = force_refresh
+                return []
+
+            app._discovery.discover_repos = spy_discover
+            await app._run_refresh()
+            assert captured["force_refresh"] is True
+
+    @pytest.mark.asyncio
+    async def test_refresh_guard_drops_concurrent_call(self):
+        async with GWTApp().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            calls = []
+
+            async def fake_run():
+                calls.append(1)
+                return "No changes"
+
+            app._run_refresh = fake_run
+
+            # Guard set: a press must be dropped without running the refresh.
+            app._refresh_in_progress = True
+            app.action_refresh()
+            await app.workers.wait_for_complete()
+            assert calls == []
+
+            # Guard clear: the refresh runs.
+            app._refresh_in_progress = False
+            app.action_refresh()
+            await app.workers.wait_for_complete()
+            assert calls == [1]
+
+
+class TestRefreshSummary:
+    def test_no_changes(self):
+        assert _format_refresh_summary(0, 0, 0) == "No changes"
+
+    def test_counts(self):
+        assert _format_refresh_summary(1, 0, 2) == "Updated 1, added 0, removed 2"
+
+    def test_any_nonzero_shows_counts(self):
+        assert _format_refresh_summary(0, 3, 0) == "Updated 0, added 3, removed 0"
+
+    def test_failed_repos_appended(self):
+        assert (
+            _format_refresh_summary(1, 0, 0, failed=2)
+            == "Updated 1, added 0, removed 0 (2 repos failed)"
+        )
+
+    def test_failed_singular_with_no_changes(self):
+        # A total scan failure must not read as a clean "No changes".
+        assert _format_refresh_summary(0, 0, 0, failed=1) == "No changes (1 repo failed)"
 
     @pytest.mark.asyncio
     async def test_tab_cycles_focus(self):

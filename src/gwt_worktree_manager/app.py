@@ -27,7 +27,11 @@ from gwt_worktree_manager.services.worktree import (
     WorktreeService,
 )
 from gwt_worktree_manager.state.selection_cache import SelectionCache
-from gwt_worktree_manager.store.metadata import MetadataStore, WorktreeEntry
+from gwt_worktree_manager.store.metadata import (
+    MetadataStore,
+    ReconcileResult,
+    WorktreeEntry,
+)
 from gwt_worktree_manager.store.ui_state import UIStateStore
 from gwt_worktree_manager.widgets.detail_panel import DetailPanel
 from gwt_worktree_manager.widgets.dialogs import (
@@ -41,6 +45,24 @@ from gwt_worktree_manager.widgets.repo_panel import RepoPanel
 from gwt_worktree_manager.widgets.splitter import SplitterBar
 from gwt_worktree_manager.widgets.status_bar import GWTStatusBar
 from gwt_worktree_manager.widgets.worktree_panel import WorktreePanel
+
+
+def _format_refresh_summary(
+    updated: int, added: int, removed: int, failed: int = 0
+) -> str:
+    """Build the status-bar message for a rescan result.
+
+    ``failed`` is the number of repos whose scan raised. When non-zero it is
+    appended so a silent failure cannot read as a clean "No changes".
+    """
+    if updated or added or removed:
+        base = f"Updated {updated}, added {added}, removed {removed}"
+    else:
+        base = "No changes"
+    if failed:
+        unit = "repo" if failed == 1 else "repos"
+        return f"{base} ({failed} {unit} failed)"
+    return base
 
 
 class GWTCommands(Provider):
@@ -155,6 +177,7 @@ class GWTApp(App):
         self._delete_in_progress = False
         self._open_in_progress = False
         self._edit_in_progress = False
+        self._refresh_in_progress = False
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
@@ -584,28 +607,58 @@ class GWTApp(App):
         await asyncio.to_thread(webbrowser.open, url)
         self.query_one(GWTStatusBar).update_status(f"Opened: {url}")
 
+    @work
     async def action_refresh(self) -> None:
-        """Refresh repos, reconcile metadata, and restore selection."""
+        """Rescan repos and worktrees, correcting stale metadata on demand.
+
+        Guarded by an in-progress flag so a second ctrl+r press is dropped
+        rather than launching a concurrent rescan, mirroring the other actions.
+        """
+        if self._refresh_in_progress:
+            return
+        self._refresh_in_progress = True
+        try:
+            await self._run_refresh()
+        finally:
+            self._refresh_in_progress = False
+
+    async def _run_refresh(self) -> str:
+        """Force a fresh scan, reconcile metadata, re-fetch issue links, and
+        report a summary. Returns the summary string written to the status bar.
+        """
         status = self.query_one(GWTStatusBar)
         status.update_status("Refreshing...")
 
         previous_repo = self._selected_repo
 
-        self._repos = await self._discovery.discover_repos()
+        # Bypass the discovery cache so new repos and worktrees appear at once.
+        self._repos = await self._discovery.discover_repos(force_refresh=True)
+
+        total = ReconcileResult()
+        failed = 0
         for repo in self._repos:
             try:
                 worktrees = await git.list_worktrees(repo.path)
-                self._metadata.reconcile(worktrees, repo_name=repo.name)
+                result = self._metadata.reconcile(worktrees, repo_name=repo.name)
+                total.updated += result.updated
+                total.added += result.added
+                total.removed += result.removed
             except Exception:
-                pass
+                failed += 1
+
+        status.update_status("Fetching issues...")
+        await self._service.refresh_issue_urls(self._metadata.list_all())
 
         repo_panel = self.query_one(RepoPanel)
         repo_panel.set_repos(self._repos)
-
         if previous_repo:
             repo_panel.select_by_name(previous_repo.name)
 
-        status.update_status("")
+        summary = _format_refresh_summary(
+            total.updated, total.added, total.removed, failed
+        )
+        status.update_status(summary)
+        return summary
 
     @work
     async def action_yank(self) -> None:

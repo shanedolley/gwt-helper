@@ -1,12 +1,21 @@
 import pytest
-import json
 import os
 from pathlib import Path
 from gwt_worktree_manager.store.metadata import (
     MetadataStore,
+    ReconcileResult,
     WorktreeEntry,
     extract_branch_parts,
 )
+
+
+class FakeWT:
+    """Stand-in for a git WorktreeInfo used in reconcile tests."""
+
+    def __init__(self, path, branch=None, is_bare=False):
+        self.path = path
+        self.branch = branch
+        self.is_bare = is_bare
 
 
 @pytest.fixture
@@ -182,14 +191,118 @@ class TestReconcile:
         assert preserved.tags == ["keep-me"]
 
     def test_skips_bare_repos(self, store):
-        class FakeWT:
-            def __init__(self, path, branch, is_bare=False):
-                self.path = path
-                self.branch = branch
-                self.is_bare = is_bare
-
         store.reconcile([FakeWT("/bare", None, is_bare=True)])
         assert store.list_all() == []
+
+
+class TestReconcileUpdatesAndCounts:
+    def test_updates_changed_branch_and_rederives_fields(self, store):
+        entry = _make_entry(
+            path="/existing",
+            branch="feature/gwt-worktree-manager",
+            work_type="feature",
+            issue_id="",
+            issue_url="https://example.test/issue",
+            issue_tracker="linear",
+        )
+        store.create(entry)
+
+        store.reconcile([FakeWT("/existing", "main")])
+
+        updated = store.get(entry.id)
+        assert updated is not None
+        assert updated.branch == "main"
+        assert updated.work_type == ""
+        assert updated.issue_id == ""
+        # issue_id became empty, so the stale issue link is cleared
+        assert updated.issue_url == ""
+        assert updated.issue_tracker == ""
+
+    def test_changed_branch_with_issue_rederives_issue_id(self, store):
+        entry = _make_entry(
+            path="/existing",
+            branch="feature/TB-1-old",
+            work_type="feature",
+            issue_id="TB-1",
+        )
+        store.create(entry)
+
+        store.reconcile([FakeWT("/existing", "bug/TB-2-new")])
+
+        updated = store.get(entry.id)
+        assert updated.branch == "bug/TB-2-new"
+        assert updated.work_type == "bug"
+        assert updated.issue_id == "TB-2"
+
+    def test_changed_branch_clears_stale_issue_url_when_issue_id_changes(self, store):
+        # The stored URL belongs to the old issue; switching to a different
+        # issue-bearing branch must clear it (the async re-fetch repopulates).
+        entry = _make_entry(
+            path="/existing",
+            branch="feature/TB-1-old",
+            issue_id="TB-1",
+            issue_url="https://example.test/TB-1",
+            issue_tracker="linear",
+        )
+        store.create(entry)
+
+        store.reconcile([FakeWT("/existing", "bug/TB-2-new")])
+
+        updated = store.get(entry.id)
+        assert updated.issue_id == "TB-2"
+        assert updated.issue_url == ""
+        assert updated.issue_tracker == ""
+
+    def test_returns_counts_for_update_add_remove(self, store):
+        # changed: branch differs; identical: branch matches; removed: absent from git
+        changed = _make_entry(path="/changed", branch="feature/TB-1-a")
+        identical = _make_entry(path="/identical", branch="feature/TB-9-keep")
+        removed = _make_entry(path="/removed", branch="feature/TB-3-gone")
+        for e in (changed, identical, removed):
+            store.create(e)
+
+        result = store.reconcile(
+            [
+                FakeWT("/changed", "feature/TB-1-b"),
+                FakeWT("/identical", "feature/TB-9-keep"),
+                FakeWT("/added", "feature/TB-4-new"),
+            ]
+        )
+
+        assert isinstance(result, ReconcileResult)
+        assert result.updated == 1
+        assert result.added == 1
+        assert result.removed == 1
+
+    def test_no_change_skips_save(self, store):
+        entry = _make_entry(path="/existing", branch="feature/TB-123-test")
+        store.create(entry)
+
+        calls = []
+        store._save = lambda: calls.append(1)  # type: ignore[method-assign]
+
+        result = store.reconcile([FakeWT("/existing", "feature/TB-123-test")])
+
+        assert calls == []
+        assert result.updated == 0
+        assert result.added == 0
+        assert result.removed == 0
+
+    def test_unchanged_branch_leaves_derived_fields(self, store):
+        # Pre-existing inconsistency is NOT self-healed when branch matches.
+        entry = _make_entry(
+            path="/existing",
+            branch="feature/TB-123-test",
+            work_type="wrong",
+            issue_id="WRONG",
+        )
+        store.create(entry)
+
+        store.reconcile([FakeWT("/existing", "feature/TB-123-test")])
+
+        preserved = store.get(entry.id)
+        assert preserved.work_type == "wrong"
+        assert preserved.issue_id == "WRONG"
 
 
 class TestExtractBranchParts:
